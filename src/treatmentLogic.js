@@ -87,12 +87,12 @@ export function getDentistType(treatmentType) {
  * @example
  * // Input:
  * getAvailableDentists("Braces Maintenance")
- * // Output: ["Dr. Denis", "Dr. Maria Gorete"]
+ * // Output: ["Dr. [Braces Dentist 1]", "Dr. [Braces Dentist 2]"]
  * 
  * @example
  * // Input:
  * getAvailableDentists("Cleaning")
- * // Output: ["Dr. Jinho", "Dr. Harry", "Dr. Grace", "Dr. Vicky"]
+ * // Output: ["Dr. [General Dentist 1]", "Dr. [General Dentist 2]", "Dr. [General Dentist 3]", "Dr. [General Dentist 4]"]
  */
 export function getAvailableDentists(treatmentType) {
   const dentistType = getDentistType(treatmentType);
@@ -110,32 +110,32 @@ export function getAvailableDentists(treatmentType) {
  * 
  * @example
  * // Consultation:
- * calculateTreatmentDuration("Consultation", "Dr. Jinho")
+ * calculateTreatmentDuration("Consultation", "Dr. [General Dentist 1]")
  * // Output: 15
  * 
  * @example
  * // Cleaning:
- * calculateTreatmentDuration("Cleaning", "Dr. Harry")
+ * calculateTreatmentDuration("Cleaning", "Dr. [General Dentist 2]")
  * // Output: 30
  * 
  * @example
- * // Braces Maintenance - Dr. Maria Gorete:
- * calculateTreatmentDuration("Braces Maintenance", "Dr. Maria Gorete")
+ * // Braces Maintenance - Dr. [Braces Dentist 2]:
+ * calculateTreatmentDuration("Braces Maintenance", "Dr. [Braces Dentist 2]")
  * // Output: 45
  * 
  * @example
- * // Braces Maintenance - Dr. Denis:
- * calculateTreatmentDuration("Braces Maintenance", "Dr. Denis")
+ * // Braces Maintenance - Dr. [Braces Dentist 1]:
+ * calculateTreatmentDuration("Braces Maintenance", "Dr. [Braces Dentist 1]")
  * // Output: 15
  * 
  * @example
  * // Filling - 1 tooth:
- * calculateTreatmentDuration("Filling", "Dr. Grace", 1)
+ * calculateTreatmentDuration("Filling", "Dr. [General Dentist 3]", 1)
  * // Output: 30
  * 
  * @example
  * // Filling - 3 teeth:
- * calculateTreatmentDuration("Filling", "Dr. Grace", 3)
+ * calculateTreatmentDuration("Filling", "Dr. [General Dentist 3]", 3)
  * // Output: 60 (30 + (3-1)*15)
  */
 export function calculateTreatmentDuration(treatmentType, dentistName, numberOfTeeth = null) {
@@ -147,9 +147,9 @@ export function calculateTreatmentDuration(treatmentType, dentistName, numberOfT
       return 30;
     
     case TREATMENT_TYPES.BRACES_MAINTENANCE:
-      if (dentistName === 'Dr. Maria Gorete') {
+      if (dentistName === 'Dr. [Braces Dentist 2]') {
         return 45;
-      } else if (dentistName === 'Dr. Denis') {
+      } else if (dentistName === 'Dr. [Braces Dentist 1]') {
         return 15;
       }
       return 15; // Default
@@ -216,17 +216,17 @@ export function extractNumberOfTeeth(message) {
  * 
  * @example
  * // Input:
- * isValidDentistForTreatment("Dr. Denis", "Braces Maintenance")
+ * isValidDentistForTreatment("Dr. [Braces Dentist 1]", "Braces Maintenance")
  * // Output: true
  * 
  * @example
  * // Input:
- * isValidDentistForTreatment("Dr. Jinho", "Braces Maintenance")
+ * isValidDentistForTreatment("Dr. [General Dentist 1]", "Braces Maintenance")
  * // Output: false
  * 
  * @example
  * // Input:
- * isValidDentistForTreatment("Dr. Grace", "Cleaning")
+ * isValidDentistForTreatment("Dr. [General Dentist 3]", "Cleaning")
  * // Output: true
  */
 export function isValidDentistForTreatment(dentistName, treatmentType) {

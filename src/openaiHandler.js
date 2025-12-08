@@ -38,7 +38,7 @@ class OpenAIHandler {
    * await generateResponse("+1234567890", "I want braces maintenance", "+1234567890")
    * 
    * // Output:
-   * "Which dentist would you like? Available options: Dr. Denis, Dr. Maria Gorete"
+   * "Which dentist would you like? Available options: Dr. [Braces Dentist 1], Dr. [Braces Dentist 2]"
    * 
    * @example
    * // On error:
@@ -295,7 +295,7 @@ JSON array:`;
    *   patientName: "John Doe",
    *   intent: "booking",
    *   treatmentType: "Cleaning",
-   *   dentistName: "Dr. Jinho"
+   *   dentistName: "Dr. [General Dentist 1]"
    * })
    * 
    * // Output:
@@ -304,7 +304,7 @@ JSON array:`;
    * - Patient name: John Doe
    * - Current intent: booking
    * - Treatment: Cleaning
-   * - Dentist: Dr. Jinho
+   * - Dentist: Dr. [General Dentist 1]
    * ..."
    */
   buildSystemPrompt(session) {
@@ -336,13 +336,13 @@ Current conversation context:
       prompt += `- Selected slot: ${session.selectedSlot.startTime.toLocaleString()}\n`;
     }
 
-    prompt += `\nAvailable dentists for braces: Dr. Denis, Dr. Maria Gorete
-Available dentists for general treatments: Dr. Jinho, Dr. Harry, Dr. Grace, Dr. Vicky
+    prompt += `\nAvailable dentists for braces: Dr. [Braces Dentist 1], Dr. [Braces Dentist 2]
+Available dentists for general treatments: Dr. [General Dentist 1], Dr. [General Dentist 2], Dr. [General Dentist 3], Dr. [General Dentist 4]
 
 Treatment durations:
 - Consultation: 15 minutes
 - Cleaning: 30 minutes
-- Braces Maintenance: 45 min (Dr. Maria Gorete), 15 min (Dr. Denis)
+- Braces Maintenance: 45 min (Dr. [Braces Dentist 2]), 15 min (Dr. [Braces Dentist 1])
 - Filling: 30 min for first tooth + 15 min per additional tooth
 
 Always confirm appointment details before booking.`;
@@ -369,13 +369,13 @@ Always confirm appointment details before booking.`;
    * 
    * @example
    * // Availability check:
-   * // Input: userMessage="Tomorrow at 10am", session.treatmentType="Cleaning", session.dentistName="Dr. Jinho"
-   * // Output: "I found an available slot:\n\nDoctor: Dr. Jinho\nDate: 1/16/2024\nTime: 10:00 AM - 10:30 AM\nDuration: 30 minutes\n\nWould you like to confirm this appointment?"
+   * // Input: userMessage="Tomorrow at 10am", session.treatmentType="Cleaning", session.dentistName="Dr. [General Dentist 1]"
+   * // Output: "I found an available slot:\n\nDoctor: Dr. [General Dentist 1]\nDate: 1/16/2024\nTime: 10:00 AM - 10:30 AM\nDuration: 30 minutes\n\nWould you like to confirm this appointment?"
    * 
    * @example
    * // Confirmation:
    * // Input: userMessage="Yes", session.selectedSlot exists, session.confirmationStatus="pending"
-   * // Output: "✅ Appointment confirmed!\n\nDoctor: Dr. Jinho\nTreatment: Cleaning\n..."
+   * // Output: "✅ Appointment confirmed!\n\nDoctor: Dr. [General Dentist 1]\nTreatment: Cleaning\n..."
    */
   async postProcessResponse(conversationId, userMessage, aiResponse, session) {
     const msg = userMessage.toLowerCase();
@@ -490,14 +490,14 @@ Always confirm appointment details before booking.`;
    *   "+1234567890",
    *   {
    *     treatmentType: "Cleaning",
-   *     dentistName: "Dr. Jinho",
+   *     dentistName: "Dr. [General Dentist 1]",
    *     numberOfTeeth: null
    *   },
    *   "Tomorrow at 10am"
    * )
    * 
    * // Output:
-   * "I found an available slot:\n\nDoctor: Dr. Jinho\nDate: 1/16/2024\nTime: 10:00 AM - 10:30 AM\nDuration: 30 minutes\n\nWould you like to confirm this appointment?"
+   * "I found an available slot:\n\nDoctor: Dr. [General Dentist 1]\nDate: 1/16/2024\nTime: 10:00 AM - 10:30 AM\nDuration: 30 minutes\n\nWould you like to confirm this appointment?"
    * 
    * @example
    * // If no slots found:
@@ -580,7 +580,7 @@ Always confirm appointment details before booking.`;
    * @example
    * // Input:
    * await confirmBooking("+1234567890", {
-   *   dentistName: "Dr. Jinho",
+   *   dentistName: "Dr. [General Dentist 1]",
    *   treatmentType: "Cleaning",
    *   phone: "+1234567890",
    *   patientName: "John Doe",
@@ -591,7 +591,7 @@ Always confirm appointment details before booking.`;
    * })
    * 
    * // Output:
-   * "✅ Appointment confirmed!\n\nDoctor: Dr. Jinho\nTreatment: Cleaning\nDate: 1/16/2024\nTime: 10:00 AM - 10:30 AM\n\nWe look forward to seeing you!"
+   * "✅ Appointment confirmed!\n\nDoctor: Dr. [General Dentist 1]\nTreatment: Cleaning\nDate: 1/16/2024\nTime: 10:00 AM - 10:30 AM\n\nWe look forward to seeing you!"
    * 
    * @example
    * // On error:
@@ -682,7 +682,7 @@ Always confirm appointment details before booking.`;
    * await handleCancellation("+1234567890", { phone: "+1234567890", existingBooking: null }, "I want to cancel")
    * 
    * // Output:
-   * "I found your appointment:\n\nDoctor: Dr. Jinho\nDate: 1/16/2024\nTime: 10:00 AM\n\nWould you like to confirm cancellation?"
+   * "I found your appointment:\n\nDoctor: Dr. [General Dentist 1]\nDate: 1/16/2024\nTime: 10:00 AM\n\nWould you like to confirm cancellation?"
    * 
    * @example
    * // Second call - user confirms:

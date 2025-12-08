@@ -27,7 +27,7 @@ GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\
 GOOGLE_PROJECT_ID=your-project-id
 
 # Google Calendar (format: Dentist Name:Calendar ID)
-GOOGLE_CALENDAR_IDS=Dr. Denis:cal1@group.calendar.google.com,Dr. Maria Gorete:cal2@group.calendar.google.com,Dr. Jinho:cal3@group.calendar.google.com,Dr. Harry:cal4@group.calendar.google.com,Dr. Grace:cal5@group.calendar.google.com,Dr. Vicky:cal6@group.calendar.google.com
+GOOGLE_CALENDAR_IDS=Dr. [Braces Dentist 1]:cal1@group.calendar.google.com,Dr. [Braces Dentist 2]:cal2@group.calendar.google.com,Dr. [General Dentist 1]:cal3@group.calendar.google.com,Dr. [General Dentist 2]:cal4@group.calendar.google.com,Dr. [General Dentist 3]:cal5@group.calendar.google.com,Dr. [General Dentist 4]:cal6@group.calendar.google.com
 
 # Google Sheets
 GOOGLE_SHEET_ID=your_sheet_id_here

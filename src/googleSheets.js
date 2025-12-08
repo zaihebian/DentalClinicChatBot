@@ -189,7 +189,7 @@ class GoogleSheetsService {
    *   phone: "+1234567890",
    *   patientName: "John Doe",
    *   intent: "booking",
-   *   dentist: "Dr. Jinho",
+   *   dentist: "Dr. [General Dentist 1]",
    *   treatment: "Cleaning",
    *   eventId: "event123",
    *   status: "confirmed",
@@ -234,7 +234,7 @@ class GoogleSheetsService {
    *   {
    *     patientName: "John Doe",
    *     intent: "booking",
-   *     dentistName: "Dr. Jinho",
+   *     dentistName: "Dr. [General Dentist 1]",
    *     treatmentType: "Cleaning",
    *     selectedSlot: {
    *       startTime: Date(2024-01-15T10:00:00Z),

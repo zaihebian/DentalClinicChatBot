@@ -4,7 +4,6 @@
  * 
  * @module config
  */
-
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -41,7 +40,7 @@ export const config = {
   },
   calendar: {
     // Parse calendar IDs from environment variable
-    // Format: "Dr. Denis:cal_id_1,Dr. Maria Gorete:cal_id_2,..."
+    // Format: "Dr. [Braces Dentist 1]:cal_id_1,Dr. [Braces Dentist 2]:cal_id_2,..."
     dentistCalendars: parseCalendarIds(process.env.GOOGLE_CALENDAR_IDS || ''),
   },
   sheets: {
@@ -69,12 +68,12 @@ export const config = {
  * 
  * @example
  * // Input:
- * parseCalendarIds("Dr. Denis:cal1@group.calendar.google.com,Dr. Maria Gorete:cal2@group.calendar.google.com")
+ * parseCalendarIds("Dr. [Braces Dentist 1]:cal1@group.calendar.google.com,Dr. [Braces Dentist 2]:cal2@group.calendar.google.com")
  * 
  * // Output:
  * {
- *   "Dr. Denis": "cal1@group.calendar.google.com",
- *   "Dr. Maria Gorete": "cal2@group.calendar.google.com"
+ *   "Dr. [Braces Dentist 1]": "cal1@group.calendar.google.com",
+ *   "Dr. [Braces Dentist 2]": "cal2@group.calendar.google.com"
  * }
  */
 function parseCalendarIds(calendarIdsString) {
@@ -101,12 +100,12 @@ function parseCalendarIds(calendarIdsString) {
  * 
  * @example
  * // Usage:
- * DENTIST_ASSIGNMENTS.braces // Returns: ['Dr. Denis', 'Dr. Maria Gorete']
- * DENTIST_ASSIGNMENTS.general // Returns: ['Dr. Jinho', 'Dr. Harry', 'Dr. Grace', 'Dr. Vicky']
+ * DENTIST_ASSIGNMENTS.braces // Returns: ['Dr. [Braces Dentist 1]', 'Dr. [Braces Dentist 2]']
+ * DENTIST_ASSIGNMENTS.general // Returns: ['Dr. [General Dentist 1]', 'Dr. [General Dentist 2]', 'Dr. [General Dentist 3]', 'Dr. [General Dentist 4]']
  */
 export const DENTIST_ASSIGNMENTS = {
-  braces: ['Dr. Denis', 'Dr. Maria Gorete'],
-  general: ['Dr. Jinho', 'Dr. Harry', 'Dr. Grace', 'Dr. Vicky'],
+  braces: ['Dr. [Braces Dentist 1]', 'Dr. [Braces Dentist 2]'],
+  general: ['Dr. [General Dentist 1]', 'Dr. [General Dentist 2]', 'Dr. [General Dentist 3]', 'Dr. [General Dentist 4]'],
 };
 
 /**

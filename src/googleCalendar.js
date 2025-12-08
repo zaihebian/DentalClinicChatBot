@@ -60,19 +60,19 @@ class GoogleCalendarService {
    * 
    * @example
    * // Input:
-   * await getAvailableSlots("Cleaning", ["Dr. Jinho", "Dr. Harry"])
-   * 
-   * // Output:
-   * [
-   *   {
-   *     doctor: "Dr. Jinho",
-   *     startTime: 2024-01-15T09:00:00.000Z,
-   *     endTime: 2024-01-15T10:00:00.000Z,
-   *     duration: 60,
-   *     weekday: "Monday"
-   *   },
-   *   {
-   *     doctor: "Dr. Harry",
+ * await getAvailableSlots("Cleaning", ["Dr. [General Dentist 1]", "Dr. [General Dentist 2]"])
+ * 
+ * // Output:
+ * [
+ *   {
+ *     doctor: "Dr. [General Dentist 1]",
+ *     startTime: 2024-01-15T09:00:00.000Z,
+ *     endTime: 2024-01-15T10:00:00.000Z,
+ *     duration: 60,
+ *     weekday: "Monday"
+ *   },
+ *   {
+ *     doctor: "Dr. [General Dentist 2]",
    *     startTime: 2024-01-15T13:00:00.000Z,
    *     endTime: 2024-01-15T14:00:00.000Z,
    *     duration: 60,
@@ -169,20 +169,20 @@ class GoogleCalendarService {
    *   ],
    *   Date(2024-01-15),
    *   Date(2024-01-16),
-   *   "Dr. Jinho"
+   *   "Dr. [General Dentist 1]"
    * )
    * 
    * // Output:
    * [
    *   {
-   *     doctor: "Dr. Jinho",
+   *     doctor: "Dr. [General Dentist 1]",
    *     startTime: Date(2024-01-15T09:00:00Z),
    *     endTime: Date(2024-01-15T10:00:00Z),
    *     duration: 60,
    *     weekday: "Monday"
    *   },
    *   {
-   *     doctor: "Dr. Jinho",
+   *     doctor: "Dr. [General Dentist 1]",
    *     startTime: Date(2024-01-15T11:00:00Z),
    *     endTime: Date(2024-01-15T18:00:00Z),
    *     duration: 420,
@@ -371,7 +371,7 @@ class GoogleCalendarService {
    *   "cal123@group.calendar.google.com",
    *   {
    *     patientName: "John Doe",
-   *     doctor: "Dr. Jinho",
+   *     doctor: "Dr. [General Dentist 1]",
    *     treatment: "Cleaning",
    *     phone: "+1234567890",
    *     startTime: Date(2024-01-15T10:00:00Z),
@@ -484,7 +484,7 @@ class GoogleCalendarService {
    *   {
    *     patientPhone: "+1234567890",
    *     patientName: "John Doe",
-   *     doctor: "Dr. Jinho",
+   *     doctor: "Dr. [General Dentist 1]",
    *     startTime: Date(2024-01-15T10:00:00Z),
    *     endTime: Date(2024-01-15T10:30:00Z),
    *     calendarEventId: "event123",
@@ -493,7 +493,7 @@ class GoogleCalendarService {
    *   {
    *     patientPhone: "+0987654321",
    *     patientName: "Jane Smith",
-   *     doctor: "Dr. Maria Gorete",
+   *     doctor: "Dr. [Braces Dentist 2]",
    *     startTime: Date(2024-01-16T14:00:00Z),
    *     endTime: Date(2024-01-16T14:45:00Z),
    *     calendarEventId: "event456",
@@ -559,7 +559,7 @@ class GoogleCalendarService {
    * {
    *   patientPhone: "+1234567890",
    *   patientName: "John Doe",
-   *   doctor: "Dr. Jinho",
+   *   doctor: "Dr. [General Dentist 1]",
    *   startTime: Date(2024-01-15T10:00:00Z),
    *   endTime: Date(2024-01-15T10:30:00Z),
    *   calendarEventId: "event123",
