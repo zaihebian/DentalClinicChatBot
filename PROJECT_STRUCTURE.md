@@ -67,15 +67,40 @@ Chatbot/
 - Parses incoming webhook messages
 
 ### 8. OpenAI Handler (`openaiHandler.js`)
-- Generates AI responses using GPT-4
-- Maintains conversation context
+- **AI-powered response generation**: Uses GPT-4/GPT-4o-mini for natural, context-aware conversations
+- **AI-powered intent detection**: 
+  - Detects booking, cancel, reschedule, price_inquiry intents from natural language
+  - Handles multiple intents in single message
+  - Handles negations, confirmations, and context-aware detection
+  - Validates all detected intents (format, type, allowed values)
+  - Removes duplicates and invalid intents
+  - Fallback to keyword-based detection if AI fails
+- **AI-powered information extraction**: 
+  - Extracts patient name, treatment type, dentist, number of teeth, date/time from natural language
+  - Single comprehensive extraction call (more efficient than multiple regex patterns)
+  - Validates all extracted data (format, type, allowed values, ranges)
+  - Handles edge cases and natural language variations
+  - Returns null for invalid/missing data (graceful degradation)
+- **Robust validation**: 
+  - Defense-in-depth: validates at extraction AND at usage
+  - Patient name: 2-100 chars, alphanumeric with spaces/hyphens/apostrophes
+  - Treatment type: Must match exactly from allowed list
+  - Dentist name: Must match exactly from available dentists
+  - Number of teeth: Integer 1-32 (human teeth range)
+  - Date/time text: 3-200 chars (parsed separately by dateParser)
+- **Intent management**: 
+  - Replaces old intents with new ones (doesn't accumulate) to prevent conflicts
+  - Keeps existing intents if no new ones detected (for confirmations)
+  - Only latest intents drive business logic
+- Maintains conversation context (patient info, treatment, dentist, selected slot)
 - Handles business logic:
-  - Treatment detection
-  - Dentist selection
-  - Availability checking
-  - Booking confirmation
-  - Cancellation handling
-  - Price inquiries
+  - Treatment detection and validation
+  - Dentist selection with availability checking (braces vs general)
+  - Availability checking with preference matching (±1 hour flexibility)
+  - Booking confirmation with calendar integration
+  - Cancellation handling with two-phase confirmation flow
+  - Price inquiries with Google Docs integration
+- Comprehensive error handling and logging
 
 ### 9. Main Server (`index.js`)
 - Express server setup
@@ -95,10 +120,23 @@ Chatbot/
    - Updates last activity timestamp
 
 3. **AI Processing**
-   - Builds context from session
-   - Sends to OpenAI API
-   - Post-processes response
-   - Handles business logic
+   - **Intent detection**: AI analyzes message for intents (booking, cancel, reschedule, price_inquiry)
+     - Validates detected intents (format, type, removes duplicates)
+     - Updates session with latest intents only (replaces old, doesn't accumulate)
+     - Keeps existing intents if no new ones detected (for confirmations)
+   - **Information extraction**: AI extracts structured data in one call
+     - Patient name, treatment type, dentist name, number of teeth, date/time text
+     - Validates all extracted data (format, type, allowed values, ranges)
+     - Defense-in-depth: validates at extraction AND at usage
+   - **Response generation**:
+     - Builds context from session (patient, intents, treatment, dentist, selected slot)
+     - Sends to OpenAI API with conversation history
+     - Generates natural, context-aware response
+   - **Post-processing**:
+     - Routes validated information to appropriate flows
+     - Updates session with extracted data
+     - Triggers availability checks, confirmations, cancellations, price inquiries
+     - Handles business logic based on latest intents only
 
 4. **Action Execution**
    - Checks availability (if booking)
@@ -118,7 +156,7 @@ Chatbot/
   conversationId: string,        // Phone number
   phone: string,
   patientName: string,
-  intent: string,                // 'booking', 'cancel', 'reschedule', 'price_inquiry'
+  intents: string[],             // Array of latest intents: 'booking', 'cancel', 'reschedule', 'price_inquiry'
   dentistType: string,           // 'braces' or 'general'
   dentistName: string,
   treatmentType: string,
@@ -134,27 +172,61 @@ Chatbot/
   confirmationStatus: string,     // 'pending' or 'confirmed'
   availableSlots: Array,
   existingBookings: Array,
-  existingBooking: Object,       // For cancellation
-  conversationHistory: Array,
+  existingBooking: Object,       // For cancellation flow
+  conversationHistory: Array,     // Array of { role: 'user'|'assistant', content: string }
   createdAt: number,
   lastActivity: number,
-  eventId: string
+  eventId: string                 // Google Calendar event ID after booking
 }
 ```
 
 ## Key Features
 
-✅ Multi-turn conversations with context
-✅ Treatment type detection
-✅ Dentist assignment based on treatment
-✅ Duration calculation (including fillings with multiple teeth)
-✅ Calendar availability checking
-✅ Appointment booking with confirmation
-✅ Appointment cancellation with confirmation
-✅ Price information retrieval
-✅ Conversation logging to Google Sheets
-✅ Session timeout management
-✅ Error handling and follow-up logging
+✅ **Multi-turn conversations** with full context retention
+✅ **AI-powered intent detection**:
+   - Detects booking, cancel, reschedule, price_inquiry intents
+   - Handles multiple intents in single message
+   - Handles negations, confirmations, context-aware detection
+   - Validates all detected intents (format, type, removes duplicates)
+   - Fallback to keyword-based detection if AI fails
+✅ **AI-powered information extraction**:
+   - Extracts patient name, treatment type, dentist, number of teeth, date/time
+   - Single comprehensive extraction call (efficient)
+   - Handles natural language variations and edge cases
+   - Validates all extracted data (format, type, allowed values, ranges)
+   - Defense-in-depth validation (at extraction AND usage)
+✅ **Intent management**: 
+   - Replaces old intents with new ones (prevents conflicts)
+   - Keeps existing intents if no new ones detected (for confirmations)
+   - Only latest intents drive business logic
+✅ **Treatment processing**:
+   - Treatment type detection and validation
+   - Dentist assignment based on treatment (braces vs general)
+   - Availability checking (dentist must be qualified for treatment)
+✅ **Duration calculation**:
+   - Fixed durations: Consultation (15 min), Cleaning (30 min)
+   - Variable durations: Braces Maintenance (15-45 min depending on dentist)
+   - Fillings: 30 min (first tooth) + 15 min per additional tooth
+✅ **Calendar integration**:
+   - Availability checking with preference matching (±1 hour flexibility)
+   - Finds gaps between appointments (9 AM - 6 PM, Mon-Fri)
+   - Creates calendar events for confirmed bookings
+   - Cancels appointments by deleting calendar events
+✅ **Appointment management**:
+   - Booking with confirmation flow
+   - Cancellation with two-phase confirmation
+   - Finds bookings by phone number
+✅ **Pricing information**: Retrieves from Google Docs with treatment-specific search
+✅ **Comprehensive logging**: All conversations and actions logged to Google Sheets
+✅ **Session management**: 
+   - Automatic timeout (10 minutes, configurable)
+   - Automatic cleanup of expired sessions
+   - Conversation history retention
+✅ **Error handling**: 
+   - Graceful degradation on API failures
+   - User-friendly error messages
+   - Follow-up logging for manual review
+   - All errors logged to Google Sheets
 
 ## Environment Variables
 

@@ -4,13 +4,37 @@ An AI-powered virtual receptionist that communicates with customers via WhatsApp
 
 ## Features
 
-- 🤖 **AI-Powered Conversations**: Uses OpenAI GPT-4/GPT-4o-mini for natural, context-aware conversations
-- 📅 **Appointment Management**: Books, cancels, and reschedules appointments across multiple dentist calendars
+- 🤖 **AI-Powered Conversations**: 
+  - Uses OpenAI GPT-4/GPT-4o-mini for natural, context-aware conversations
+  - Maintains full conversation history and context
+  - Handles multi-turn conversations seamlessly
+- 🎯 **AI-Powered Intent Detection**:
+  - Detects booking, cancel, reschedule, price_inquiry intents from natural language
+  - Handles multiple intents in single message
+  - Handles negations, confirmations, and context-aware detection
+  - Validates all detected intents (format, type, removes duplicates)
+  - Fallback to keyword-based detection if AI fails
+- 🔍 **AI-Powered Information Extraction**:
+  - Extracts patient name, treatment type, dentist, number of teeth, date/time from natural language
+  - Single comprehensive extraction call (more efficient than multiple regex patterns)
+  - Handles natural language variations and edge cases
+  - Validates all extracted data (format, type, allowed values, ranges)
+  - Defense-in-depth validation (at extraction AND usage)
+- 📅 **Appointment Management**: 
+  - Books, cancels appointments across multiple dentist calendars
+  - Two-phase confirmation flow for cancellations
+  - Finds bookings by phone number
 - 💬 **WhatsApp Integration**: Seamless communication via WhatsApp Business API
-- 📊 **Activity Logging**: All conversations and actions logged to Google Sheets
-- 💰 **Pricing Information**: Retrieves treatment pricing from Google Docs
-- 🧠 **Session Management**: Maintains conversation context with automatic timeout
-- ⏱️ **Smart Scheduling**: Calculates treatment durations and finds optimal time slots
+- 📊 **Activity Logging**: All conversations and actions logged to Google Sheets with comprehensive details
+- 💰 **Pricing Information**: Retrieves treatment pricing from Google Docs with treatment-specific search
+- 🧠 **Session Management**: 
+  - Maintains conversation context with automatic timeout (10 minutes)
+  - Automatic cleanup of expired sessions
+  - Intent management: replaces old intents with new ones (prevents conflicts)
+- ⏱️ **Smart Scheduling**: 
+  - Calculates treatment durations (including variable durations for fillings)
+  - Finds optimal time slots with preference matching (±1 hour flexibility)
+  - Validates dentist availability for treatment type
 
 ## Prerequisites
 
@@ -219,13 +243,18 @@ The application is a standard Express.js app and can be deployed to:
 ## Session Management
 
 - Sessions are maintained per phone number (conversation ID)
-- Sessions timeout after 10 minutes of inactivity (configurable)
+- Sessions timeout after 10 minutes of inactivity (configurable via `SESSION_TIMEOUT_MINUTES`)
+- Automatic cleanup of expired sessions (runs every minute)
 - Session data includes:
-  - Patient information
-  - Treatment type and dentist
-  - Selected time slot
-  - Conversation history
-  - Confirmation status
+  - Patient information (name, phone)
+  - Latest intents (array, replaces old intents, doesn't accumulate)
+  - Treatment type and dentist (with validation)
+  - Selected time slot (with duration)
+  - Conversation history (all messages with timestamps)
+  - Confirmation status (pending/confirmed)
+  - Calendar event ID (after booking)
+- Intent management: Only latest intents are considered (prevents conflicts)
+- Session expires if no activity for timeout period (prevents stale data)
 
 ## Logging
 
@@ -244,9 +273,14 @@ All conversations and actions are logged to Google Sheets with:
 
 ## Error Handling
 
-- Failed bookings are logged with status: `NEEDS FOLLOW-UP***************`
-- Missing appointments trigger follow-up requests
-- All errors are logged for review
+- **Graceful degradation**: API failures don't crash the application
+- **User-friendly messages**: Errors are converted to helpful messages for users
+- **Comprehensive logging**: All errors logged to Google Sheets with details
+- **Follow-up tracking**: Failed operations logged with status: `NEEDS FOLLOW-UP***************`
+- **Validation**: All AI outputs validated (format, type, allowed values) before use
+- **Fallback mechanisms**: Keyword-based detection if AI fails
+- **Error recovery**: Missing appointments trigger follow-up requests
+- **Defense-in-depth**: Multiple validation layers prevent invalid data from causing issues
 
 ## Security Notes
 

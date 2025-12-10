@@ -1,6 +1,20 @@
 /**
  * Treatment Logic module for detecting and processing treatment-related information.
- * Handles treatment type detection, dentist assignment, and duration calculations.
+ * 
+ * Handles treatment type detection, dentist assignment, duration calculations,
+ * and validation of treatment-dentist compatibility. Provides business logic
+ * for determining which dentists can handle which treatments and how long
+ * treatments take.
+ * 
+ * Key features:
+ * - Keyword-based treatment detection (fallback when AI extraction unavailable)
+ * - Dentist type categorization (braces vs general)
+ * - Treatment duration calculation (including variable durations for fillings)
+ * - Dentist-treatment compatibility validation
+ * 
+ * Note: This module provides fallback/helper functions. Primary treatment detection
+ * is now handled by AI in openaiHandler.js, but these functions remain for
+ * validation and fallback scenarios.
  * 
  * @module treatmentLogic
  */
@@ -9,30 +23,54 @@ import { TREATMENT_TYPES, DENTIST_ASSIGNMENTS } from './config.js';
 
 /**
  * Detects treatment type from user message using keyword matching.
+ * 
  * Analyzes the message text to identify the type of dental treatment requested.
+ * Uses simple keyword matching as a fallback when AI extraction is unavailable.
+ * This is a less sophisticated method than AI extraction but provides reliability.
+ * 
+ * Detection priority:
+ * 1. "cleaning" or "clean" → Cleaning
+ * 2. "filling" or "fill" → Filling
+ * 3. "braces" or "brace" → Braces Maintenance
+ * 4. Default → Consultation
+ * 
+ * Edge cases:
+ * - Case-insensitive matching
+ * - Partial word matching (e.g., "cleaning" matches "clean")
+ * - Defaults to Consultation if no keywords found
  * 
  * @param {string} userMessage - User's message text
- * @returns {string} Treatment type constant (from TREATMENT_TYPES)
+ * @returns {string} Treatment type constant from TREATMENT_TYPES
  * 
  * @example
- * // Input:
+ * // Cleaning detection:
  * detectTreatmentType("I need a cleaning")
  * // Output: "Cleaning"
  * 
  * @example
- * // Input:
+ * // Braces detection:
  * detectTreatmentType("I want braces maintenance")
  * // Output: "Braces Maintenance"
  * 
  * @example
- * // Input:
+ * // Filling detection:
  * detectTreatmentType("I need a filling")
  * // Output: "Filling"
  * 
  * @example
- * // Input:
+ * // Default (no keywords found):
  * detectTreatmentType("I have a toothache")
- * // Output: "Consultation" (default)
+ * // Output: "Consultation" (default fallback)
+ * 
+ * @example
+ * // Case insensitive:
+ * detectTreatmentType("I NEED CLEANING")
+ * // Output: "Cleaning"
+ * 
+ * @example
+ * // Partial match:
+ * detectTreatmentType("I want to clean my teeth")
+ * // Output: "Cleaning" (matches "clean")
  */
 export function detectTreatmentType(userMessage) {
   const message = userMessage.toLowerCase();
@@ -55,19 +93,34 @@ export function detectTreatmentType(userMessage) {
 
 /**
  * Determines dentist category (braces or general) based on treatment type.
- * Used to filter which dentists can handle a specific treatment.
  * 
- * @param {string} treatmentType - Treatment type constant
+ * Used to filter which dentists can handle a specific treatment. This is a
+ * business rule: braces treatments require braces specialists, while all other
+ * treatments can be handled by general dentists.
+ * 
+ * Mapping:
+ * - Braces Maintenance → 'braces'
+ * - All other treatments (Cleaning, Filling, Consultation) → 'general'
+ * 
+ * @param {string} treatmentType - Treatment type constant from TREATMENT_TYPES
  * @returns {string} 'braces' or 'general'
  * 
  * @example
- * // Input:
+ * // Braces treatment:
  * getDentistType("Braces Maintenance")
  * // Output: "braces"
  * 
  * @example
- * // Input:
+ * // General treatments:
  * getDentistType("Cleaning")
+ * // Output: "general"
+ * 
+ * @example
+ * getDentistType("Filling")
+ * // Output: "general"
+ * 
+ * @example
+ * getDentistType("Consultation")
  * // Output: "general"
  */
 export function getDentistType(treatmentType) {
@@ -79,20 +132,37 @@ export function getDentistType(treatmentType) {
 
 /**
  * Gets the list of available dentists for a specific treatment type.
- * Returns dentists that are qualified to handle the given treatment.
  * 
- * @param {string} treatmentType - Treatment type constant
- * @returns {string[]} Array of dentist names
+ * Returns dentists that are qualified to handle the given treatment based on
+ * the dentist category (braces vs general). This is used to filter available
+ * options when presenting dentist choices to users.
+ * 
+ * Logic:
+ * 1. Determines dentist type (braces or general) from treatment type
+ * 2. Returns corresponding dentist list from DENTIST_ASSIGNMENTS
+ * 3. Returns empty array if treatment type is invalid
+ * 
+ * @param {string} treatmentType - Treatment type constant from TREATMENT_TYPES
+ * @returns {string[]} Array of dentist names that can handle this treatment
  * 
  * @example
- * // Input:
+ * // Braces treatment:
  * getAvailableDentists("Braces Maintenance")
  * // Output: ["Dr. [Braces Dentist 1]", "Dr. [Braces Dentist 2]"]
  * 
  * @example
- * // Input:
+ * // General treatments:
  * getAvailableDentists("Cleaning")
  * // Output: ["Dr. [General Dentist 1]", "Dr. [General Dentist 2]", "Dr. [General Dentist 3]", "Dr. [General Dentist 4]"]
+ * 
+ * @example
+ * getAvailableDentists("Filling")
+ * // Output: ["Dr. [General Dentist 1]", "Dr. [General Dentist 2]", "Dr. [General Dentist 3]", "Dr. [General Dentist 4]"]
+ * 
+ * @example
+ * // Invalid treatment type:
+ * getAvailableDentists("Unknown")
+ * // Output: [] (empty array, no dentists available)
  */
 export function getAvailableDentists(treatmentType) {
   const dentistType = getDentistType(treatmentType);
@@ -101,42 +171,71 @@ export function getAvailableDentists(treatmentType) {
 
 /**
  * Calculates treatment duration in minutes based on treatment type, dentist, and number of teeth.
- * Implements business rules for different treatment durations.
  * 
- * @param {string} treatmentType - Treatment type constant
- * @param {string} dentistName - Name of the dentist
- * @param {number|null} numberOfTeeth - Number of teeth (for fillings), null for other treatments
- * @returns {number} Duration in minutes
+ * Implements business rules for different treatment durations. This is critical
+ * for scheduling as it determines how long an appointment slot needs to be.
+ * 
+ * Duration rules:
+ * - Consultation: 15 minutes (fixed)
+ * - Cleaning: 30 minutes (fixed)
+ * - Braces Maintenance: 45 min (Dr. [Braces Dentist 2]), 15 min (Dr. [Braces Dentist 1])
+ * - Filling: 30 min (first tooth) + 15 min per additional tooth
+ * - Default: 15 minutes (fallback)
+ * 
+ * Edge cases:
+ * - Filling with null/undefined numberOfTeeth defaults to 15 minutes
+ * - Invalid treatment type defaults to 15 minutes
+ * - Dentist name only matters for Braces Maintenance
+ * 
+ * @param {string} treatmentType - Treatment type constant from TREATMENT_TYPES
+ * @param {string} dentistName - Name of the dentist (only used for Braces Maintenance)
+ * @param {number|null} [numberOfTeeth=null] - Number of teeth (for fillings only), null for other treatments
+ * @returns {number} Duration in minutes (always positive integer)
  * 
  * @example
- * // Consultation:
+ * // Consultation (fixed duration):
  * calculateTreatmentDuration("Consultation", "Dr. [General Dentist 1]")
  * // Output: 15
  * 
  * @example
- * // Cleaning:
+ * // Cleaning (fixed duration):
  * calculateTreatmentDuration("Cleaning", "Dr. [General Dentist 2]")
  * // Output: 30
  * 
  * @example
- * // Braces Maintenance - Dr. [Braces Dentist 2]:
+ * // Braces Maintenance - Dr. [Braces Dentist 2] (longer duration):
  * calculateTreatmentDuration("Braces Maintenance", "Dr. [Braces Dentist 2]")
  * // Output: 45
  * 
  * @example
- * // Braces Maintenance - Dr. [Braces Dentist 1]:
+ * // Braces Maintenance - Dr. [Braces Dentist 1] (shorter duration):
  * calculateTreatmentDuration("Braces Maintenance", "Dr. [Braces Dentist 1]")
  * // Output: 15
  * 
  * @example
- * // Filling - 1 tooth:
+ * // Filling - 1 tooth (base duration):
  * calculateTreatmentDuration("Filling", "Dr. [General Dentist 3]", 1)
  * // Output: 30
  * 
  * @example
- * // Filling - 3 teeth:
+ * // Filling - 3 teeth (base + additional):
  * calculateTreatmentDuration("Filling", "Dr. [General Dentist 3]", 3)
- * // Output: 60 (30 + (3-1)*15)
+ * // Output: 60 (30 + (3-1)*15 = 30 + 30)
+ * 
+ * @example
+ * // Filling - 5 teeth:
+ * calculateTreatmentDuration("Filling", "Dr. [General Dentist 3]", 5)
+ * // Output: 90 (30 + (5-1)*15 = 30 + 60)
+ * 
+ * @example
+ * // Filling without numberOfTeeth (defaults):
+ * calculateTreatmentDuration("Filling", "Dr. [General Dentist 3]", null)
+ * // Output: 15 (default when teeth count not specified)
+ * 
+ * @example
+ * // Invalid treatment type (defaults):
+ * calculateTreatmentDuration("Unknown", "Dr. [General Dentist 1]")
+ * // Output: 15 (default fallback)
  */
 export function calculateTreatmentDuration(treatmentType, dentistName, numberOfTeeth = null) {
   switch (treatmentType) {
@@ -170,30 +269,62 @@ export function calculateTreatmentDuration(treatmentType, dentistName, numberOfT
 
 /**
  * Extracts the number of teeth from a user message.
- * Looks for numeric values in the message and validates they're within reasonable range (1-32).
+ * 
+ * Looks for numeric values in the message and validates they're within reasonable
+ * range (1-32, human teeth count). Uses simple regex pattern matching to find
+ * the first number in the message.
+ * 
+ * Validation:
+ * - Must be a positive integer
+ * - Must be between 1 and 32 (human teeth range)
+ * - Returns null if no number found or outside range
+ * 
+ * Note: This is a fallback method. Primary extraction is now handled by AI
+ * in openaiHandler.js, but this remains for validation and fallback scenarios.
+ * 
+ * Edge cases:
+ * - Returns first number found (may not be teeth-related)
+ * - Returns null if number is 0 or negative
+ * - Returns null if number > 32
+ * - Returns null if no number found
  * 
  * @param {string} message - User's message text
- * @returns {number|null} Number of teeth if found and valid, null otherwise
+ * @returns {number|null} Number of teeth if found and valid (1-32), null otherwise
  * 
  * @example
- * // Input:
+ * // Valid number in range:
  * extractNumberOfTeeth("I need fillings for 3 teeth")
  * // Output: 3
  * 
  * @example
- * // Input:
+ * // Number at start of message:
  * extractNumberOfTeeth("2 teeth need filling")
  * // Output: 2
  * 
  * @example
- * // Input:
+ * // No number found:
  * extractNumberOfTeeth("I need a filling")
- * // Output: null (no number found)
+ * // Output: null
  * 
  * @example
- * // Input:
+ * // Number outside range (> 32):
  * extractNumberOfTeeth("50 teeth")
- * // Output: null (outside valid range 1-32)
+ * // Output: null (exceeds human teeth count)
+ * 
+ * @example
+ * // Number at lower bound:
+ * extractNumberOfTeeth("1 tooth")
+ * // Output: 1
+ * 
+ * @example
+ * // Number at upper bound:
+ * extractNumberOfTeeth("32 teeth")
+ * // Output: 32
+ * 
+ * @example
+ * // Zero (invalid):
+ * extractNumberOfTeeth("0 teeth")
+ * // Output: null (must be > 0)
  */
 export function extractNumberOfTeeth(message) {
   const numbers = message.match(/\d+/);
@@ -208,26 +339,49 @@ export function extractNumberOfTeeth(message) {
 
 /**
  * Validates if a dentist is qualified to handle a specific treatment type.
- * Checks if the dentist is in the list of available dentists for that treatment.
  * 
- * @param {string} dentistName - Name of the dentist
- * @param {string} treatmentType - Treatment type constant
+ * Checks if the dentist is in the list of available dentists for that treatment.
+ * This ensures business rules are enforced: braces dentists can only do braces
+ * treatments, and general dentists can only do general treatments.
+ * 
+ * Validation logic:
+ * 1. Gets available dentists for the treatment type
+ * 2. Checks if dentist name is in that list
+ * 3. Returns true if found, false otherwise
+ * 
+ * Use cases:
+ * - Validating AI-extracted dentist names
+ * - Preventing invalid dentist-treatment combinations
+ * - Filtering dentist options in UI
+ * 
+ * @param {string} dentistName - Name of the dentist to validate
+ * @param {string} treatmentType - Treatment type constant from TREATMENT_TYPES
  * @returns {boolean} True if dentist can handle the treatment, false otherwise
  * 
  * @example
- * // Input:
+ * // Valid braces dentist for braces treatment:
  * isValidDentistForTreatment("Dr. [Braces Dentist 1]", "Braces Maintenance")
  * // Output: true
  * 
  * @example
- * // Input:
+ * // Invalid: general dentist for braces treatment:
  * isValidDentistForTreatment("Dr. [General Dentist 1]", "Braces Maintenance")
- * // Output: false
+ * // Output: false (general dentists can't do braces)
  * 
  * @example
- * // Input:
+ * // Valid general dentist for general treatment:
  * isValidDentistForTreatment("Dr. [General Dentist 3]", "Cleaning")
  * // Output: true
+ * 
+ * @example
+ * // Invalid: braces dentist for general treatment:
+ * isValidDentistForTreatment("Dr. [Braces Dentist 1]", "Cleaning")
+ * // Output: false (braces dentists can't do general treatments)
+ * 
+ * @example
+ * // Unknown dentist:
+ * isValidDentistForTreatment("Dr. Unknown", "Cleaning")
+ * // Output: false (not in available dentists list)
  */
 export function isValidDentistForTreatment(dentistName, treatmentType) {
   const availableDentists = getAvailableDentists(treatmentType);
