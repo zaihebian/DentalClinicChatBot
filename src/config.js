@@ -77,7 +77,7 @@ export const config = {
   },
   calendar: {
     // Parse calendar IDs from environment variable
-    // Format: "Dr. [Braces Dentist 1]:cal_id_1,Dr. [Braces Dentist 2]:cal_id_2,..."
+    // Format: "Dr BracesA:cal_id_1,Dr BracesB:cal_id_2,Dr GeneralA:cal_id_3,Dr GeneralB:cal_id_4"
     dentistCalendars: parseCalendarIds(process.env.GOOGLE_CALENDAR_IDS || ''),
   },
   sheets: {
@@ -120,11 +120,11 @@ export const config = {
  * 
  * @example
  * // Valid format:
- * parseCalendarIds("Dr. [Braces Dentist 1]:cal1@group.calendar.google.com,Dr. [Braces Dentist 2]:cal2@group.calendar.google.com")
+ * parseCalendarIds("Dr BracesA:cal1@group.calendar.google.com,Dr BracesB:cal2@group.calendar.google.com")
  * // Output:
  * // {
- * //   "Dr. [Braces Dentist 1]": "cal1@group.calendar.google.com",
- * //   "Dr. [Braces Dentist 2]": "cal2@group.calendar.google.com"
+ * //   "Dr BracesA": "cal1@group.calendar.google.com",
+ * //   "Dr BracesB": "cal2@group.calendar.google.com"
  * // }
  * 
  * @example
@@ -134,20 +134,20 @@ export const config = {
  * 
  * @example
  * // Invalid entries (skipped):
- * parseCalendarIds("Dr. [Braces Dentist 1]:cal1,invalid_entry,Dr. [Braces Dentist 2]:cal2")
+ * parseCalendarIds("Dr BracesA:cal1,invalid_entry,Dr BracesB:cal2")
  * // Output:
  * // {
- * //   "Dr. [Braces Dentist 1]": "cal1",
- * //   "Dr. [Braces Dentist 2]": "cal2"
+ * //   "Dr BracesA": "cal1",
+ * //   "Dr BracesB": "cal2"
  * // }
  * // Note: "invalid_entry" skipped (no colon)
  * 
  * @example
  * // Whitespace handling:
- * parseCalendarIds("  Dr. [Braces Dentist 1]  :  cal1  ")
+ * parseCalendarIds("  Dr BracesA  :  cal1  ")
  * // Output:
  * // {
- * //   "Dr. [Braces Dentist 1]": "cal1"  // Whitespace trimmed
+ * //   "Dr BracesA": "cal1"  // Whitespace trimmed
  * // }
  */
 function parseCalendarIds(calendarIdsString) {
@@ -174,12 +174,12 @@ function parseCalendarIds(calendarIdsString) {
  * 
  * @example
  * // Usage:
- * DENTIST_ASSIGNMENTS.braces // Returns: ['Dr. [Braces Dentist 1]', 'Dr. [Braces Dentist 2]']
- * DENTIST_ASSIGNMENTS.general // Returns: ['Dr. [General Dentist 1]', 'Dr. [General Dentist 2]', 'Dr. [General Dentist 3]', 'Dr. [General Dentist 4]']
+ * DENTIST_ASSIGNMENTS.braces // Returns: ['Dr BracesA', 'Dr BracesB']
+ * DENTIST_ASSIGNMENTS.general // Returns: ['Dr GeneralA', 'Dr GeneralB']
  */
 export const DENTIST_ASSIGNMENTS = {
-  braces: ['Dr. [Braces Dentist 1]', 'Dr. [Braces Dentist 2]'],
-  general: ['Dr. [General Dentist 1]', 'Dr. [General Dentist 2]', 'Dr. [General Dentist 3]', 'Dr. [General Dentist 4]'],
+  braces: ['Dr BracesA', 'Dr BracesB'],
+  general: ['Dr GeneralA', 'Dr GeneralB'],
 };
 
 /**

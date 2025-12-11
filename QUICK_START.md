@@ -31,7 +31,7 @@ Copy-Item .env.example .env
 - [ ] Extract `private_key` → `GOOGLE_PRIVATE_KEY` (keep `\n`)
 - [ ] Extract `project_id` → `GOOGLE_PROJECT_ID`
 
-### Google Calendars (6 dentists)
+### Google Calendars (4 dentists)
 - [ ] Create calendar for each dentist
 - [ ] Share each calendar with service account (Editor)
 - [ ] Get Calendar ID from settings

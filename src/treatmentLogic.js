@@ -148,16 +148,16 @@ export function getDentistType(treatmentType) {
  * @example
  * // Braces treatment:
  * getAvailableDentists("Braces Maintenance")
- * // Output: ["Dr. [Braces Dentist 1]", "Dr. [Braces Dentist 2]"]
+ * // Output: ["Dr BracesA", "Dr BracesB"]
  * 
  * @example
  * // General treatments:
  * getAvailableDentists("Cleaning")
- * // Output: ["Dr. [General Dentist 1]", "Dr. [General Dentist 2]", "Dr. [General Dentist 3]", "Dr. [General Dentist 4]"]
+ * // Output: ["Dr GeneralA", "Dr GeneralB"]
  * 
  * @example
  * getAvailableDentists("Filling")
- * // Output: ["Dr. [General Dentist 1]", "Dr. [General Dentist 2]", "Dr. [General Dentist 3]", "Dr. [General Dentist 4]"]
+ * // Output: ["Dr GeneralA", "Dr GeneralB"]
  * 
  * @example
  * // Invalid treatment type:
@@ -178,7 +178,7 @@ export function getAvailableDentists(treatmentType) {
  * Duration rules:
  * - Consultation: 15 minutes (fixed)
  * - Cleaning: 30 minutes (fixed)
- * - Braces Maintenance: 45 min (Dr. [Braces Dentist 2]), 15 min (Dr. [Braces Dentist 1])
+ * - Braces Maintenance: 45 min (Dr BracesB), 15 min (Dr BracesA)
  * - Filling: 30 min (first tooth) + 15 min per additional tooth
  * - Default: 15 minutes (fallback)
  * 
@@ -194,47 +194,47 @@ export function getAvailableDentists(treatmentType) {
  * 
  * @example
  * // Consultation (fixed duration):
- * calculateTreatmentDuration("Consultation", "Dr. [General Dentist 1]")
+ * calculateTreatmentDuration("Consultation", "Dr GeneralA")
  * // Output: 15
  * 
  * @example
  * // Cleaning (fixed duration):
- * calculateTreatmentDuration("Cleaning", "Dr. [General Dentist 2]")
+ * calculateTreatmentDuration("Cleaning", "Dr GeneralB")
  * // Output: 30
  * 
  * @example
- * // Braces Maintenance - Dr. [Braces Dentist 2] (longer duration):
- * calculateTreatmentDuration("Braces Maintenance", "Dr. [Braces Dentist 2]")
+ * // Braces Maintenance - Dr BracesB (longer duration):
+ * calculateTreatmentDuration("Braces Maintenance", "Dr BracesB")
  * // Output: 45
  * 
  * @example
- * // Braces Maintenance - Dr. [Braces Dentist 1] (shorter duration):
- * calculateTreatmentDuration("Braces Maintenance", "Dr. [Braces Dentist 1]")
+ * // Braces Maintenance - Dr BracesA (shorter duration):
+ * calculateTreatmentDuration("Braces Maintenance", "Dr BracesA")
  * // Output: 15
  * 
  * @example
  * // Filling - 1 tooth (base duration):
- * calculateTreatmentDuration("Filling", "Dr. [General Dentist 3]", 1)
+ * calculateTreatmentDuration("Filling", "Dr GeneralA", 1)
  * // Output: 30
  * 
  * @example
  * // Filling - 3 teeth (base + additional):
- * calculateTreatmentDuration("Filling", "Dr. [General Dentist 3]", 3)
+ * calculateTreatmentDuration("Filling", "Dr GeneralA", 3)
  * // Output: 60 (30 + (3-1)*15 = 30 + 30)
  * 
  * @example
  * // Filling - 5 teeth:
- * calculateTreatmentDuration("Filling", "Dr. [General Dentist 3]", 5)
+ * calculateTreatmentDuration("Filling", "Dr GeneralA", 5)
  * // Output: 90 (30 + (5-1)*15 = 30 + 60)
  * 
  * @example
  * // Filling without numberOfTeeth (defaults):
- * calculateTreatmentDuration("Filling", "Dr. [General Dentist 3]", null)
+ * calculateTreatmentDuration("Filling", "Dr GeneralA", null)
  * // Output: 15 (default when teeth count not specified)
  * 
  * @example
  * // Invalid treatment type (defaults):
- * calculateTreatmentDuration("Unknown", "Dr. [General Dentist 1]")
+ * calculateTreatmentDuration("Unknown", "Dr GeneralA")
  * // Output: 15 (default fallback)
  */
 export function calculateTreatmentDuration(treatmentType, dentistName, numberOfTeeth = null) {
@@ -246,9 +246,9 @@ export function calculateTreatmentDuration(treatmentType, dentistName, numberOfT
       return 30;
     
     case TREATMENT_TYPES.BRACES_MAINTENANCE:
-      if (dentistName === 'Dr. [Braces Dentist 2]') {
+      if (dentistName === 'Dr BracesB') {
         return 45;
-      } else if (dentistName === 'Dr. [Braces Dentist 1]') {
+      } else if (dentistName === 'Dr BracesA') {
         return 15;
       }
       return 15; // Default
@@ -360,22 +360,22 @@ export function extractNumberOfTeeth(message) {
  * 
  * @example
  * // Valid braces dentist for braces treatment:
- * isValidDentistForTreatment("Dr. [Braces Dentist 1]", "Braces Maintenance")
+ * isValidDentistForTreatment("Dr BracesA", "Braces Maintenance")
  * // Output: true
  * 
  * @example
  * // Invalid: general dentist for braces treatment:
- * isValidDentistForTreatment("Dr. [General Dentist 1]", "Braces Maintenance")
+ * isValidDentistForTreatment("Dr GeneralA", "Braces Maintenance")
  * // Output: false (general dentists can't do braces)
  * 
  * @example
  * // Valid general dentist for general treatment:
- * isValidDentistForTreatment("Dr. [General Dentist 3]", "Cleaning")
+ * isValidDentistForTreatment("Dr GeneralA", "Cleaning")
  * // Output: true
  * 
  * @example
  * // Invalid: braces dentist for general treatment:
- * isValidDentistForTreatment("Dr. [Braces Dentist 1]", "Cleaning")
+ * isValidDentistForTreatment("Dr BracesA", "Cleaning")
  * // Output: false (braces dentists can't do general treatments)
  * 
  * @example

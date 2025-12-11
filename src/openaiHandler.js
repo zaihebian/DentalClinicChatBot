@@ -69,13 +69,13 @@ class OpenAIHandler {
    * @example
    * // Standard booking request:
    * await generateResponse("+1234567890", "I want braces maintenance", "+1234567890")
-   * // Output: "Which dentist would you like? Available options: Dr. [Braces Dentist 1], Dr. [Braces Dentist 2]"
+   * // Output: "Which dentist would you like? Available options: Dr BracesA, Dr BracesB"
    * 
    * @example
    * // Confirmation (keeps existing intent):
    * await generateResponse("+1234567890", "Yes", "+1234567890")
    * // Session already has intent: ["booking"], selectedSlot exists
-   * // Output: "✅ Appointment confirmed!\n\nDoctor: Dr. [General Dentist 1]..."
+   * // Output: "✅ Appointment confirmed!\n\nDoctor: Dr GeneralA..."
    * 
    * @example
    * // Multiple intents in one message:
@@ -416,12 +416,12 @@ JSON array:`;
    * 
    * @example
    * // Complete information extraction:
-   * await extractInformation("Hi, I'm John Smith and I need a cleaning with Dr. [General Dentist 1] next Tuesday at 1pm", {})
-   * // Output:
-   * {
-   *   patientName: "John Smith",
-   *   treatmentType: "Cleaning",
-   *   dentistName: "Dr. [General Dentist 1]",
+ * await extractInformation("Hi, I'm John Smith and I need a cleaning with Dr GeneralA next Tuesday at 1pm", {})
+ * // Output:
+ * {
+ *   patientName: "John Smith",
+ *   treatmentType: "Cleaning",
+ *   dentistName: "Dr GeneralA",
    *   numberOfTeeth: null,
    *   dateTimeText: "next Tuesday at 1pm"
    * }
@@ -470,9 +470,8 @@ JSON array:`;
   async extractInformation(message, session) {
     try {
       const availableDentists = [
-        'Dr. [Braces Dentist 1]', 'Dr. [Braces Dentist 2]',
-        'Dr. [General Dentist 1]', 'Dr. [General Dentist 2]', 
-        'Dr. [General Dentist 3]', 'Dr. [General Dentist 4]'
+        'Dr BracesA', 'Dr BracesB',
+        'Dr GeneralA', 'Dr GeneralB'
       ];
       
       const treatmentTypes = ['Consultation', 'Cleaning', 'Filling', 'Braces Maintenance'];
@@ -642,7 +641,7 @@ JSON object:`;
    *   patientName: "John Doe",
    *   intents: ["booking"],
    *   treatmentType: "Cleaning",
-   *   dentistName: "Dr. [General Dentist 1]",
+   *   dentistName: "Dr GeneralA",
    *   selectedSlot: { startTime: new Date("2024-01-16T10:00:00Z") }
    * })
    * // Output: Prompt with all context included
@@ -689,13 +688,13 @@ Current conversation context:
       prompt += `- Selected slot: ${session.selectedSlot.startTime.toLocaleString()}\n`;
     }
 
-    prompt += `\nAvailable dentists for braces: Dr. [Braces Dentist 1], Dr. [Braces Dentist 2]
-Available dentists for general treatments: Dr. [General Dentist 1], Dr. [General Dentist 2], Dr. [General Dentist 3], Dr. [General Dentist 4]
+    prompt += `\nAvailable dentists for braces: Dr BracesA, Dr BracesB
+Available dentists for general treatments: Dr GeneralA, Dr GeneralB
 
 Treatment durations:
 - Consultation: 15 minutes
 - Cleaning: 30 minutes
-- Braces Maintenance: 45 min (Dr. [Braces Dentist 2]), 15 min (Dr. [Braces Dentist 1])
+- Braces Maintenance: 45 min (Dr BracesB), 15 min (Dr BracesA)
 - Filling: 30 min for first tooth + 15 min per additional tooth
 
 Always confirm appointment details before booking.`;
@@ -738,10 +737,10 @@ Always confirm appointment details before booking.`;
    * // Complete booking flow (all info provided):
    * await postProcessResponse("+1234567890", "Tomorrow at 10am", "Great!", {
    *   treatmentType: "Cleaning",
-   *   dentistName: "Dr. [General Dentist 1]",
+   *   dentistName: "Dr GeneralA",
    *   selectedSlot: null
    * }, ["booking"])
-   * // Output: "I found an available slot:\n\nDoctor: Dr. [General Dentist 1]\nDate: 1/16/2024\nTime: 10:00 AM - 10:30 AM\nDuration: 30 minutes\n\nWould you like to confirm this appointment?"
+   * // Output: "I found an available slot:\n\nDoctor: Dr GeneralA\nDate: 1/16/2024\nTime: 10:00 AM - 10:30 AM\nDuration: 30 minutes\n\nWould you like to confirm this appointment?"
    * 
    * @example
    * // Confirmation (slot pending):
@@ -749,9 +748,9 @@ Always confirm appointment details before booking.`;
    *   selectedSlot: { startTime: new Date("2024-01-16T10:00:00Z") },
    *   confirmationStatus: "pending",
    *   treatmentType: "Cleaning",
-   *   dentistName: "Dr. [General Dentist 1]"
+   *   dentistName: "Dr GeneralA"
    * }, ["booking"])
-   * // Output: "✅ Appointment confirmed!\n\nDoctor: Dr. [General Dentist 1]\nTreatment: Cleaning\n..."
+   * // Output: "✅ Appointment confirmed!\n\nDoctor: Dr GeneralA\nTreatment: Cleaning\n..."
    * 
    * @example
    * // Partial information (date/time but missing treatment/dentist):
@@ -797,9 +796,8 @@ Always confirm appointment details before booking.`;
 
     // Validate extracted information format (defense in depth)
     const availableDentists = [
-      'Dr. [Braces Dentist 1]', 'Dr. [Braces Dentist 2]',
-      'Dr. [General Dentist 1]', 'Dr. [General Dentist 2]', 
-      'Dr. [General Dentist 3]', 'Dr. [General Dentist 4]'
+      'Dr BracesA', 'Dr BracesB',
+      'Dr GeneralA', 'Dr GeneralB'
     ];
     const treatmentTypes = ['Consultation', 'Cleaning', 'Filling', 'Braces Maintenance'];
     
@@ -959,25 +957,25 @@ Always confirm appointment details before booking.`;
    * // Preferred time match found:
    * await checkAvailability("+1234567890", {
    *   treatmentType: "Cleaning",
-   *   dentistName: "Dr. [General Dentist 1]",
+   *   dentistName: "Dr GeneralA",
    *   numberOfTeeth: null
    * }, "Tomorrow at 10am")
-   * // Output: "I found an available slot:\n\nDoctor: Dr. [General Dentist 1]\nDate: 1/16/2024\nTime: 10:00 AM - 10:30 AM\nDuration: 30 minutes\n\nWould you like to confirm this appointment?"
+   * // Output: "I found an available slot:\n\nDoctor: Dr GeneralA\nDate: 1/16/2024\nTime: 10:00 AM - 10:30 AM\nDuration: 30 minutes\n\nWould you like to confirm this appointment?"
    * 
    * @example
    * // No preferred time match, uses earliest available:
    * await checkAvailability("+1234567890", {
    *   treatmentType: "Cleaning",
-   *   dentistName: "Dr. [General Dentist 1]",
+   *   dentistName: "Dr GeneralA",
    *   numberOfTeeth: null
    * }, "anytime")
-   * // Output: "I found an available slot:\n\nDoctor: Dr. [General Dentist 1]\nDate: [earliest date]\nTime: [earliest time]..."
+   * // Output: "I found an available slot:\n\nDoctor: Dr GeneralA\nDate: [earliest date]\nTime: [earliest time]..."
    * 
    * @example
    * // Filling with multiple teeth (longer duration):
    * await checkAvailability("+1234567890", {
    *   treatmentType: "Filling",
-   *   dentistName: "Dr. [General Dentist 1]",
+   *   dentistName: "Dr GeneralA",
    *   numberOfTeeth: 3
    * }, "next Tuesday")
    * // Duration: 30 min (first tooth) + 15 min × 2 (additional teeth) = 60 minutes
@@ -987,7 +985,7 @@ Always confirm appointment details before booking.`;
    * // No slots available:
    * await checkAvailability("+1234567890", {
    *   treatmentType: "Cleaning",
-   *   dentistName: "Dr. [General Dentist 1]",
+   *   dentistName: "Dr GeneralA",
    *   numberOfTeeth: null
    * }, "tomorrow")
    * // Output: "I apologize, but I could not find an available slot at the moment. Would you like me to check for a different time, or would you prefer to contact our receptionist directly?"
@@ -1088,7 +1086,7 @@ Always confirm appointment details before booking.`;
    * @example
    * // Successful booking:
    * await confirmBooking("+1234567890", {
-   *   dentistName: "Dr. [General Dentist 1]",
+   *   dentistName: "Dr GeneralA",
    *   treatmentType: "Cleaning",
    *   phone: "+1234567890",
    *   patientName: "John Doe",
@@ -1097,13 +1095,13 @@ Always confirm appointment details before booking.`;
    *     endTime: new Date("2024-01-16T10:30:00Z")
    *   }
    * })
-   * // Output: "✅ Appointment confirmed!\n\nDoctor: Dr. [General Dentist 1]\nTreatment: Cleaning\nDate: 1/16/2024\nTime: 10:00 AM - 10:30 AM\n\nWe look forward to seeing you!"
+   * // Output: "✅ Appointment confirmed!\n\nDoctor: Dr GeneralA\nTreatment: Cleaning\nDate: 1/16/2024\nTime: 10:00 AM - 10:30 AM\n\nWe look forward to seeing you!"
    * // Session updated: confirmationStatus="confirmed", eventId="[calendar event ID]"
    * 
    * @example
    * // Missing patient name (uses default):
    * await confirmBooking("+1234567890", {
-   *   dentistName: "Dr. [General Dentist 1]",
+   *   dentistName: "Dr GeneralA",
    *   treatmentType: "Cleaning",
    *   phone: "+1234567890",
    *   patientName: null,  // Not set
@@ -1221,7 +1219,7 @@ Always confirm appointment details before booking.`;
    *   existingBooking: null
    * }, "I want to cancel")
    * // Searches for booking by phone, finds it
-   * // Output: "I found your appointment:\n\nDoctor: Dr. [General Dentist 1]\nDate: 1/16/2024\nTime: 10:00 AM\n\nWould you like to confirm cancellation?"
+   * // Output: "I found your appointment:\n\nDoctor: Dr GeneralA\nDate: 1/16/2024\nTime: 10:00 AM\n\nWould you like to confirm cancellation?"
    * // Session updated: existingBooking={...}
    * 
    * @example
@@ -1231,7 +1229,7 @@ Always confirm appointment details before booking.`;
    *   existingBooking: {
    *     calendarId: "...",
    *     calendarEventId: "...",
-   *     doctor: "Dr. [General Dentist 1]",
+   *     doctor: "Dr GeneralA",
    *     startTime: new Date("2024-01-16T10:00:00Z"),
    *     endTime: new Date("2024-01-16T10:30:00Z"),
    *     patientName: "John Doe"

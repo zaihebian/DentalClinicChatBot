@@ -50,7 +50,7 @@ This guide will help you deploy the AI Dental Receptionist to Vercel.
    GOOGLE_SERVICE_ACCOUNT_EMAIL=your-service@project.iam.gserviceaccount.com
    GOOGLE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
    GOOGLE_PROJECT_ID=your_project_id
-   GOOGLE_CALENDAR_IDS=Dr. [Braces Dentist 1]:cal_id_1,Dr. [Braces Dentist 2]:cal_id_2,...
+   GOOGLE_CALENDAR_IDS=Dr BracesA:cal_id_1,Dr BracesB:cal_id_2,Dr GeneralA:cal_id_3,Dr GeneralB:cal_id_4
    GOOGLE_SHEET_ID=your_sheet_id
    GOOGLE_SHEET_NAME=Conversations
    GOOGLE_DOC_ID=your_doc_id

@@ -79,7 +79,7 @@ GOOGLE_PROJECT_ID=your_project_id
 
 # Google Calendar IDs (comma-separated)
 # Format: dentist_name:calendar_id
-GOOGLE_CALENDAR_IDS=Dr. [Braces Dentist 1]:calendar_id_1,Dr. [Braces Dentist 2]:calendar_id_2,Dr. [General Dentist 1]:calendar_id_3,Dr. [General Dentist 2]:calendar_id_4,Dr. [General Dentist 3]:calendar_id_5,Dr. [General Dentist 4]:calendar_id_6
+GOOGLE_CALENDAR_IDS=Dr BracesA:calendar_id_1,Dr BracesB:calendar_id_2,Dr GeneralA:calendar_id_3,Dr GeneralB:calendar_id_4
 
 # Google Sheets Configuration
 GOOGLE_SHEET_ID=your_sheet_id
@@ -188,9 +188,9 @@ The application is a standard Express.js app and can be deployed to:
 
 **User:** "I want braces maintenance"
 
-**Bot:** "Which dentist would you like? (Options: Dr. [Braces Dentist 1], Dr. [Braces Dentist 2])"
+**Bot:** "Which dentist would you like? (Options: Dr BracesA, Dr BracesB)"
 
-**User:** "Dr. [Braces Dentist 2]"
+**User:** "Dr BracesB"
 
 **Bot:** "What day/time works for you?"
 
@@ -220,7 +220,7 @@ The application is a standard Express.js app and can be deployed to:
 
 **User:** "I want to cancel my appointment"
 
-**Bot:** "Found appointment with Dr. [General Dentist 3] on 2025-12-10 at 15:00. Confirm cancellation?"
+**Bot:** "Found appointment with Dr GeneralB on 2025-12-10 at 15:00. Confirm cancellation?"
 
 **User:** "Yes"
 
@@ -231,14 +231,14 @@ The application is a standard Express.js app and can be deployed to:
 - **Consultation**: 15 minutes
 - **Cleaning**: 30 minutes
 - **Braces Maintenance**: 
-  - Dr. [Braces Dentist 2]: 45 minutes
-  - Dr. [Braces Dentist 1]: 15 minutes
+  - Dr BracesB: 45 minutes
+  - Dr BracesA: 15 minutes
 - **Filling**: 30 minutes for first tooth + 15 minutes per additional tooth
 
 ## Dentist Assignments
 
-- **Braces Treatment**: Dr. [Braces Dentist 1], Dr. [Braces Dentist 2]
-- **General Treatment**: Dr. [General Dentist 1], Dr. [General Dentist 2], Dr. [General Dentist 3], Dr. [General Dentist 4]
+- **Braces Treatment**: Dr BracesA, Dr BracesB
+- **General Treatment**: Dr GeneralA, Dr GeneralB
 
 ## Session Management
 

@@ -213,7 +213,7 @@ class SessionManager {
    *   selectedSlot: {
    *     startTime: new Date("2024-01-16T10:00:00Z"),
    *     endTime: new Date("2024-01-16T10:30:00Z"),
-   *     doctor: "Dr. [General Dentist 1]"
+   *     doctor: "Dr GeneralA"
    *   }
    * })
    * // selectedSlot object replaced entirely (not merged)

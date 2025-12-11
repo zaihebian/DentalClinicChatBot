@@ -117,7 +117,7 @@ For each dentist, create a calendar:
 
 1. Go to [Google Calendar](https://calendar.google.com/)
 2. Click **"+"** next to "Other calendars" → **"Create new calendar"**
-3. Enter calendar name (e.g., "Dr. [Braces Dentist 1]")
+3. Enter calendar name (e.g., "Dr BracesA")
 4. Click **"Create calendar"**
 5. Go to calendar settings (click **"Settings and sharing"**)
 6. Scroll to **"Integrate calendar"**
@@ -129,17 +129,15 @@ For each dentist, create a calendar:
    - Select **"Make changes to events"** permission
    - Click **"Send"**
 
-**Repeat for all 6 dentists:**
-- Dr. [Braces Dentist 1]
-- Dr. [Braces Dentist 2]
-- Dr. [General Dentist 1]
-- Dr. [General Dentist 2]
-- Dr. [General Dentist 3]
-- Dr. [General Dentist 4]
+**Repeat for all 4 dentists:**
+- Dr BracesA
+- Dr BracesB
+- Dr GeneralA
+- Dr GeneralB
 
 **Add to `.env`:**
 ```env
-GOOGLE_CALENDAR_IDS=Dr. [Braces Dentist 1]:calendar_id_1,Dr. [Braces Dentist 2]:calendar_id_2,Dr. [General Dentist 1]:calendar_id_3,Dr. [General Dentist 2]:calendar_id_4,Dr. [General Dentist 3]:calendar_id_5,Dr. [General Dentist 4]:calendar_id_6
+GOOGLE_CALENDAR_IDS=Dr BracesA:calendar_id_1,Dr BracesB:calendar_id_2,Dr GeneralA:calendar_id_3,Dr GeneralB:calendar_id_4
 ```
 
 ### 4.7 Create Google Sheet for Logging

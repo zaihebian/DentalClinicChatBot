@@ -127,18 +127,18 @@ class GoogleCalendarService {
    * 
    * @example
    * // Get slots for multiple dentists:
- * await getAvailableSlots("Cleaning", ["Dr. [General Dentist 1]", "Dr. [General Dentist 2]"])
+ * await getAvailableSlots("Cleaning", ["Dr GeneralA", "Dr GeneralB"])
  * // Output:
-   * // [
-   * //   {
-   * //     doctor: "Dr. [General Dentist 1]",
-   * //     startTime: Date(2024-01-15T09:00:00.000Z),
-   * //     endTime: Date(2024-01-15T10:00:00.000Z),
-   * //     duration: 60,
-   * //     weekday: "Monday"
-   * //   },
-   * //   {
-   * //     doctor: "Dr. [General Dentist 2]",
+ * // [
+ * //   {
+ * //     doctor: "Dr GeneralA",
+ * //     startTime: Date(2024-01-15T09:00:00.000Z),
+ * //     endTime: Date(2024-01-15T10:00:00.000Z),
+ * //     duration: 60,
+ * //     weekday: "Monday"
+ * //   },
+ * //   {
+ * //     doctor: "Dr GeneralB",
    * //     startTime: Date(2024-01-15T13:00:00.000Z),
    * //     endTime: Date(2024-01-15T14:00:00.000Z),
    * //     duration: 60,
@@ -148,12 +148,12 @@ class GoogleCalendarService {
    * 
    * @example
    * // No available slots:
-   * await getAvailableSlots("Cleaning", ["Dr. [General Dentist 1]"])
-   * // Output: [] (empty array if all slots are booked)
-   * 
-   * @example
-   * // Calendar fetch error for one dentist:
-   * // If Dr. [General Dentist 1] calendar fails, Dr. [General Dentist 2] still returns slots
+ * await getAvailableSlots("Cleaning", ["Dr GeneralA"])
+ * // Output: [] (empty array if all slots are booked)
+ * 
+ * @example
+ * // Calendar fetch error for one dentist:
+ * // If Dr GeneralA calendar fails, Dr GeneralB still returns slots
    * // Error logged to console, but doesn't stop other dentists
    */
   async getAvailableSlots(treatmentType, dentistNames) {
@@ -245,20 +245,20 @@ class GoogleCalendarService {
    *   ],
    *   Date(2024-01-15),
    *   Date(2024-01-16),
-   *   "Dr. [General Dentist 1]"
+   *   "Dr GeneralA"
    * )
    * 
    * // Output:
    * [
    *   {
-   *     doctor: "Dr. [General Dentist 1]",
+   *     doctor: "Dr GeneralA",
    *     startTime: Date(2024-01-15T09:00:00Z),
    *     endTime: Date(2024-01-15T10:00:00Z),
    *     duration: 60,
    *     weekday: "Monday"
    *   },
    *   {
-   *     doctor: "Dr. [General Dentist 1]",
+   *     doctor: "Dr GeneralA",
    *     startTime: Date(2024-01-15T11:00:00Z),
    *     endTime: Date(2024-01-15T18:00:00Z),
    *     duration: 420,
@@ -465,7 +465,7 @@ class GoogleCalendarService {
    *   "cal123@group.calendar.google.com",
    *   {
    *     patientName: "John Doe",
-   *     doctor: "Dr. [General Dentist 1]",
+   *     doctor: "Dr GeneralA",
    *     treatment: "Cleaning",
    *     phone: "+1234567890",
    *     startTime: new Date("2024-01-15T10:00:00Z"),
@@ -587,7 +587,7 @@ class GoogleCalendarService {
    *   {
    *     patientPhone: "+1234567890",
    *     patientName: "John Doe",
-   *     doctor: "Dr. [General Dentist 1]",
+   *     doctor: "Dr GeneralA",
    *     startTime: Date(2024-01-15T10:00:00Z),
    *     endTime: Date(2024-01-15T10:30:00Z),
    *     calendarEventId: "event123",
@@ -596,7 +596,7 @@ class GoogleCalendarService {
    *   {
    *     patientPhone: "+0987654321",
    *     patientName: "Jane Smith",
-   *     doctor: "Dr. [Braces Dentist 2]",
+   *     doctor: "Dr BracesB",
    *     startTime: Date(2024-01-16T14:00:00Z),
    *     endTime: Date(2024-01-16T14:45:00Z),
    *     calendarEventId: "event456",
@@ -687,7 +687,7 @@ class GoogleCalendarService {
    * // {
    * //   patientPhone: "+1234567890",
    * //   patientName: "John Doe",
-   * //   doctor: "Dr. [General Dentist 1]",
+   * //   doctor: "Dr GeneralA",
    * //   startTime: Date(2024-01-15T10:00:00Z),
    * //   endTime: Date(2024-01-15T10:30:00Z),
    * //   calendarEventId: "event123",
