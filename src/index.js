@@ -110,11 +110,20 @@ app.get('/webhook', (req, res) => {
   const token = req.query['hub.verify_token'];
   const challenge = req.query['hub.challenge'];
 
+  console.log('🔍 Webhook verification attempt:', {
+    mode,
+    tokenReceived: token ? '***' + token.slice(-4) : 'none',
+    hasChallenge: !!challenge,
+    timestamp: new Date().toISOString()
+  });
+
   const verified = whatsappService.verifyWebhook(mode, token, challenge);
   
   if (verified) {
+    console.log('✅ Webhook verified successfully');
     res.status(200).send(challenge);
   } else {
+    console.log('❌ Webhook verification failed');
     res.sendStatus(403);
   }
 });
@@ -188,12 +197,21 @@ app.get('/webhook', (req, res) => {
  */
 app.post('/webhook', async (req, res) => {
   try {
+    // Log all webhook requests for debugging
+    console.log('📥 Webhook received:', {
+      object: req.body.object,
+      hasEntry: !!req.body.entry,
+      entryCount: req.body.entry?.length || 0,
+      timestamp: new Date().toISOString()
+    });
+
     // Verify it's from WhatsApp
     if (req.body.object === 'whatsapp_business_account') {
       const messageData = whatsappService.parseWebhookMessage(req.body);
       
       if (messageData) {
         const { phoneNumber, messageText } = messageData;
+        console.log('💬 Message received:', { phoneNumber, messageText });
         
         // Use phone number as conversation ID
         const conversationId = phoneNumber;
@@ -220,13 +238,15 @@ app.post('/webhook', async (req, res) => {
 
         res.status(200).send('OK');
       } else {
+        console.log('⚠️ Webhook received but no message data found');
         res.status(200).send('OK'); // Not a message we handle
       }
     } else {
+      console.log('⚠️ Webhook received but object is not whatsapp_business_account:', req.body.object);
       res.status(200).send('OK');
     }
   } catch (error) {
-    console.error('Error processing webhook:', error);
+    console.error('❌ Error processing webhook:', error);
     res.status(500).send('Error');
   }
 });
