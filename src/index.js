@@ -294,27 +294,38 @@ async function initialize() {
   }
 }
 
-// Start server
-// Listens on configured port (default 3000) and starts initialization
-const PORT = config.server.port;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  initialize(); // Initialize Google Sheets and validate config
-});
+// Export app for Vercel serverless functions
+export default app;
 
-// Graceful shutdown handlers
-// Clean up resources when receiving termination signals
-// SIGTERM: Sent by process managers (PM2, Docker, etc.) to request shutdown
-// SIGINT: Sent by Ctrl+C in terminal
-process.on('SIGTERM', () => {
-  console.log('SIGTERM received, shutting down gracefully...');
-  sessionManager.destroy(); // Stop cleanup interval, clear all sessions
-  process.exit(0); // Exit successfully
-});
+// Start server only if not in Vercel environment
+// Vercel uses serverless functions and doesn't need app.listen()
+if (!process.env.VERCEL) {
+  const PORT = config.server.port;
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+    initialize(); // Initialize Google Sheets and validate config
+  });
 
-process.on('SIGINT', () => {
-  console.log('SIGINT received, shutting down gracefully...');
-  sessionManager.destroy(); // Stop cleanup interval, clear all sessions
-  process.exit(0); // Exit successfully
-});
+  // Graceful shutdown handlers
+  // Clean up resources when receiving termination signals
+  // SIGTERM: Sent by process managers (PM2, Docker, etc.) to request shutdown
+  // SIGINT: Sent by Ctrl+C in terminal
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM received, shutting down gracefully...');
+    sessionManager.destroy(); // Stop cleanup interval, clear all sessions
+    process.exit(0); // Exit successfully
+  });
+
+  process.on('SIGINT', () => {
+    console.log('SIGINT received, shutting down gracefully...');
+    sessionManager.destroy(); // Stop cleanup interval, clear all sessions
+    process.exit(0); // Exit successfully
+  });
+} else {
+  // Initialize for Vercel (runs on first request)
+  // Note: This runs once per serverless function instance
+  initialize().catch(err => {
+    console.error('Initialization error (non-blocking):', err);
+  });
+}
 

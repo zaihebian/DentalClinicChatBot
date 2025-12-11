@@ -65,7 +65,7 @@ export const config = {
     model: process.env.OPENAI_MODEL || 'gpt-4o-mini',
   },
   whatsapp: {
-    apiUrl: process.env.WHATSAPP_API_URL || 'https://graph.facebook.com/v18.0',
+    apiUrl: process.env.WHATSAPP_API_URL || 'https://graph.facebook.com/v22.0',
     phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,
     accessToken: process.env.WHATSAPP_ACCESS_TOKEN,
     verifyToken: process.env.WHATSAPP_VERIFY_TOKEN,
