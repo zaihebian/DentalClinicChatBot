@@ -112,7 +112,7 @@ app.get('/webhook', (req, res) => {
 
   console.log('🔍 Webhook verification attempt:', {
     mode,
-    tokenReceived: token ? '***' + token.slice(-4) : 'none',
+    tokenReceived: token ? `***${token.slice(-4)}` : 'none',
     hasChallenge: !!challenge,
     timestamp: new Date().toISOString()
   });
@@ -197,21 +197,25 @@ app.get('/webhook', (req, res) => {
  */
 app.post('/webhook', async (req, res) => {
   try {
-    // Log all webhook requests for debugging
+    // Log full webhook payload for debugging
     console.log('📥 Webhook received:', {
       object: req.body.object,
       hasEntry: !!req.body.entry,
       entryCount: req.body.entry?.length || 0,
       timestamp: new Date().toISOString()
     });
-
+    
+    // Log full payload structure (first 2000 chars to avoid huge logs)
+    const payloadStr = JSON.stringify(req.body, null, 2);
+    console.log('📋 Full webhook payload:', payloadStr.substring(0, 2000));
+    
     // Verify it's from WhatsApp
     if (req.body.object === 'whatsapp_business_account') {
       const messageData = whatsappService.parseWebhookMessage(req.body);
       
       if (messageData) {
         const { phoneNumber, messageText } = messageData;
-        console.log('💬 Message received:', { phoneNumber, messageText });
+        console.log('💬 Message parsed successfully:', { phoneNumber, messageText });
         
         // Use phone number as conversation ID
         const conversationId = phoneNumber;
@@ -239,6 +243,12 @@ app.post('/webhook', async (req, res) => {
         res.status(200).send('OK');
       } else {
         console.log('⚠️ Webhook received but no message data found');
+        console.log('🔍 Debugging parseWebhookMessage:');
+        console.log('  - entry exists:', !!req.body.entry?.[0]);
+        console.log('  - changes exists:', !!req.body.entry?.[0]?.changes?.[0]);
+        console.log('  - value exists:', !!req.body.entry?.[0]?.changes?.[0]?.value);
+        console.log('  - messages exists:', !!req.body.entry?.[0]?.changes?.[0]?.value?.messages);
+        console.log('  - first message:', req.body.entry?.[0]?.changes?.[0]?.value?.messages?.[0]);
         res.status(200).send('OK'); // Not a message we handle
       }
     } else {
@@ -247,6 +257,7 @@ app.post('/webhook', async (req, res) => {
     }
   } catch (error) {
     console.error('❌ Error processing webhook:', error);
+    console.error('Error stack:', error.stack);
     res.status(500).send('Error');
   }
 });

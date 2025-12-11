@@ -78,6 +78,18 @@ class GoogleSheetsService {
    */
   initializeAuth() {
     try {
+      console.log('🔐 Initializing Google Sheets auth...');
+      console.log('  - Service Account Email:', config.google.serviceAccountEmail ? 'exists' : 'missing');
+      console.log('  - Private Key:', config.google.privateKey ? `exists (length: ${config.google.privateKey.length})` : 'missing');
+      
+      if (config.google.privateKey) {
+        const keyPreview = config.google.privateKey.substring(0, 50);
+        console.log('  - Private Key preview:', keyPreview);
+        console.log('  - Starts with BEGIN:', config.google.privateKey.includes('BEGIN PRIVATE KEY'));
+        console.log('  - Contains newlines (\\n):', config.google.privateKey.includes('\\n'));
+        console.log('  - Contains actual newlines:', config.google.privateKey.includes('\n'));
+      }
+      
       this.auth = new google.auth.JWT(
         config.google.serviceAccountEmail,
         null,
@@ -85,8 +97,14 @@ class GoogleSheetsService {
         ['https://www.googleapis.com/auth/spreadsheets']
       );
       this.sheets = google.sheets({ version: 'v4', auth: this.auth });
+      console.log('✅ Google Sheets auth initialized successfully');
     } catch (error) {
-      console.error('Error initializing Google Sheets auth:', error);
+      console.error('❌ Error initializing Google Sheets auth:', error);
+      console.error('  - Error message:', error.message);
+      console.error('  - Error code:', error.code);
+      if (error.opensslErrorStack) {
+        console.error('  - OpenSSL errors:', error.opensslErrorStack);
+      }
       throw error;
     }
   }
@@ -107,13 +125,20 @@ class GoogleSheetsService {
    */
   async initializeSheet() {
     try {
+      console.log('📊 Initializing Google Sheet...');
+      console.log('  - Sheet ID:', config.sheets.sheetId ? 'exists' : 'missing');
+      console.log('  - Sheet Name:', config.sheets.sheetName);
+      
       // Check if headers exist
       const response = await this.sheets.spreadsheets.values.get({
         spreadsheetId: config.sheets.sheetId,
         range: `${config.sheets.sheetName}!A1:Z1`,
       });
 
+      console.log('  - Headers check response:', response.data.values ? 'headers exist' : 'no headers');
+
       if (!response.data.values || response.data.values.length === 0) {
+        console.log('  - Adding headers to sheet...');
         // Add headers
         await this.sheets.spreadsheets.values.append({
           spreadsheetId: config.sheets.sheetId,
@@ -137,9 +162,17 @@ class GoogleSheetsService {
             ]],
           },
         });
+        console.log('✅ Headers added successfully');
+      } else {
+        console.log('✅ Headers already exist');
       }
     } catch (error) {
-      console.error('Error initializing sheet:', error);
+      console.error('❌ Error initializing sheet:', error);
+      console.error('  - Error message:', error.message);
+      console.error('  - Error code:', error.code);
+      if (error.response) {
+        console.error('  - API response:', error.response.data);
+      }
     }
   }
 

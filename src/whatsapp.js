@@ -269,12 +269,30 @@ class WhatsAppService {
    */
   parseWebhookMessage(body) {
     try {
+      console.log('🔍 parseWebhookMessage - Starting parsing...');
       const entry = body.entry?.[0];
+      console.log('  - entry:', entry ? 'exists' : 'missing');
+      
       const changes = entry?.changes?.[0];
+      console.log('  - changes:', changes ? 'exists' : 'missing');
+      
       const value = changes?.value;
+      console.log('  - value:', value ? 'exists' : 'missing');
+      if (value) {
+        console.log('  - value keys:', Object.keys(value));
+      }
+      
       const message = value?.messages?.[0];
+      console.log('  - message:', message ? 'exists' : 'missing');
+      
+      if (message) {
+        console.log('  - message keys:', Object.keys(message));
+        console.log('  - message type:', message.type);
+        console.log('  - has text:', !!message.text);
+      }
 
       if (!message) {
+        console.log('⚠️ No message found in webhook payload');
         return null;
       }
 
@@ -283,6 +301,8 @@ class WhatsAppService {
       const messageId = message.id;
       const timestamp = message.timestamp;
 
+      console.log('✅ Message parsed:', { phoneNumber, messageText, messageId, timestamp });
+
       return {
         phoneNumber,
         messageText,
@@ -290,7 +310,8 @@ class WhatsAppService {
         timestamp,
       };
     } catch (error) {
-      console.error('Error parsing webhook message:', error);
+      console.error('❌ Error parsing webhook message:', error);
+      console.error('Error stack:', error.stack);
       return null;
     }
   }
