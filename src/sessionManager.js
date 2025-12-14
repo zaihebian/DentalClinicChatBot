@@ -139,7 +139,8 @@ class SessionManager {
    *   numberOfTeeth: null,  // For fillings only
    *   selectedSlot: null,  // { startTime, endTime, doctor, weekday, duration }
    *   confirmationStatus: 'pending',  // 'pending' or 'confirmed'
-   *   availableSlots: [],  // Array of available appointment slots
+   *   availableSlots: [],  // Array of available appointment slots (cached)
+   *   availableSlotsTimestamp: null,  // Timestamp when slots were fetched (for cache freshness)
    *   existingBookings: [],  // Array of existing bookings
    *   existingBooking: null,  // Single booking object (for cancellation flow)
    *   conversationHistory: [],  // Array of { role, content, timestamp }
@@ -161,7 +162,8 @@ class SessionManager {
       numberOfTeeth: null, // For fillings
       selectedSlot: null, // { start, end, doctor, weekday }
       confirmationStatus: 'pending', // 'pending' or 'confirmed'
-      availableSlots: [], // Array of available slots for 1 month
+      availableSlots: [], // Array of available slots for 1 month (cached)
+      availableSlotsTimestamp: null, // Timestamp when slots were fetched (for cache freshness)
       existingBookings: [], // Array of existing bookings for 2 months
       conversationHistory: [], // Array of { role: 'user'|'assistant', content: string, timestamp: Date }
       createdAt: Date.now(),

@@ -788,7 +788,14 @@ Working hours: 9:00 AM - 6:00 PM, Monday-Friday (weekends excluded)
 Minimum appointment time: 9:00 AM
 Maximum appointment time: 6:00 PM
 
-Always confirm appointment details before booking. Only say an appointment is "scheduled" or "confirmed" after the system has actually created a calendar event.`;
+IMPORTANT RULES:
+- Patient name is MANDATORY - always ask for it before booking or confirming appointments
+- If user doesn't specify a treatment type, assume they need a Consultation
+- Do NOT ask users to choose a dentist - the system will automatically select the dentist with earliest availability
+- Always check availability when user wants to book - don't suggest times without checking first
+- If user doesn't specify a time preference, default to ASAP (earliest available slot)
+- Never confirm or book an appointment without collecting the patient's name first
+- Always confirm appointment details before booking. Only say an appointment is "scheduled" or "confirmed" after the system has actually created a calendar event.`;
 
     return prompt;
   }
@@ -938,6 +945,7 @@ Always confirm appointment details before booking. Only say an appointment is "s
 
     // 2. Treatment type → update session
     // Edge case: Only update if not already set (prevents overwriting user's previous choice)
+    // REQUIREMENT: If no treatment type specified, default to Consultation
     if (validated.treatmentType && !session.treatmentType) {
       console.log('✅ [POST-PROCESS] Updating treatmentType:', validated.treatmentType);
       sessionManager.updateSession(conversationId, { treatmentType: validated.treatmentType });
@@ -952,6 +960,10 @@ Always confirm appointment details before booking. Only say an appointment is "s
         console.log('⚠️ [POST-PROCESS] Filling requires numberOfTeeth, asking user');
         return aiResponse + '\n\nHow many teeth need filling?';
       }
+    } else if (!session.treatmentType && !validated.treatmentType && validatedLatestIntents.includes('booking')) {
+      // REQUIREMENT: Default to Consultation if user wants to book but hasn't specified treatment
+      console.log('✅ [POST-PROCESS] No treatment specified, defaulting to Consultation');
+      sessionManager.updateSession(conversationId, { treatmentType: 'Consultation' });
     }
 
     // 3. Dentist selection → update session (with validation)
@@ -979,13 +991,8 @@ Always confirm appointment details before booking. Only say an appointment is "s
         }
         // Note: If dentist not available for treatment, silently ignore (don't update session)
       }
-    } else if (session.treatmentType && !session.dentistName && (msg.includes('dentist') || msg.includes('doctor'))) {
-      // Edge case: User mentioned dentist/doctor but AI didn't extract specific name
-      // Prompt user to choose from available dentists for their treatment type
-      console.log('⚠️ [POST-PROCESS] User mentioned dentist but no name extracted, prompting');
-      const availableDentistsForTreatment = getAvailableDentists(session.treatmentType);
-      return `Which dentist would you like? Available options: ${availableDentistsForTreatment.join(', ')}`;
-    }
+    // REQUIREMENT: Don't require dentist selection - auto-select based on earliest availability
+    // Removed: Prompt user to choose dentist - we'll auto-select in checkAvailability
 
     // 4. Number of teeth (for fillings) → update session
     if (validated.numberOfTeeth && session.treatmentType === 'Filling' && !session.numberOfTeeth) {
@@ -993,48 +1000,42 @@ Always confirm appointment details before booking. Only say an appointment is "s
       sessionManager.updateSession(conversationId, { numberOfTeeth: validated.numberOfTeeth });
     }
 
-    // 5. Date/time preferences → route to dateParser, then checkAvailability
-    // Edge case 1: All required info present (treatment, dentist, date/time) and no slot pending
-    if (validated.dateTimeText && session.treatmentType && session.dentistName && !session.selectedSlot) {
-      console.log('🔄 [POST-PROCESS] All info present, checking availability');
-      // Use dateParser to parse the extracted date/time text
-      const datePreference = parseDateTimePreference(validated.dateTimeText);
-      console.log('🔄 [POST-PROCESS] Parsed date preference:', datePreference);
-      if (datePreference.date || datePreference.time) {
-        // Trigger availability check with parsed preference
-        return await this.checkAvailability(conversationId, session, validated.dateTimeText);
-      }
-    } 
-    // Edge case 2: Date/time mentioned but missing treatment or dentist - use validated values if available
-    // This handles cases where user provides all info in one message: "I need cleaning with Dr. X tomorrow"
-    else if (validated.dateTimeText && (session.treatmentType || validated.treatmentType) && (session.dentistName || validated.dentistName)) {
-      console.log('🔄 [POST-PROCESS] Date/time with partial info, combining session and extracted values');
-      // Combine session and extracted values to get complete picture
-      const finalTreatment = session.treatmentType || validated.treatmentType;
-      const finalDentist = session.dentistName || validated.dentistName;
+    // REQUIREMENT: Always check availability for bookings, even without date/time
+    // REQUIREMENT: Auto-select dentist with earliest availability
+    // REQUIREMENT: Default to ASAP (earliest available) if no time preference
+    // REQUIREMENT: Patient name is mandatory - prompt if missing
+    
+    // Get current session state (may have been updated above)
+    const currentSession = sessionManager.getSession(conversationId);
+    const hasTreatment = currentSession.treatmentType || validated.treatmentType;
+    const hasBookingIntent = validatedLatestIntents.includes('booking');
+    const noSlotPending = !currentSession.selectedSlot;
+    const hasPatientName = currentSession.patientName || validated.patientName;
+    
+    // REQUIREMENT: Check for patient name before proceeding with booking
+    if (hasBookingIntent && !hasPatientName && !validated.patientName) {
+      console.log('⚠️ [POST-PROCESS] Patient name is mandatory but missing, prompting user');
+      return 'To book your appointment, I need your name. What is your name?';
+    }
+    
+    // If booking intent and treatment is set (or defaulted to Consultation), check availability
+    if (hasBookingIntent && hasTreatment && noSlotPending && hasPatientName) {
+      console.log('🔄 [POST-PROCESS] Booking intent detected, checking availability');
       
-      console.log('🔄 [POST-PROCESS] Combined values:', { finalTreatment, finalDentist });
-      
-      if (finalTreatment && finalDentist) {
-        // Ensure session has these values (update if missing)
-        if (!session.treatmentType) {
-          console.log('✅ [POST-PROCESS] Updating treatmentType from extracted:', finalTreatment);
-          sessionManager.updateSession(conversationId, { treatmentType: finalTreatment });
-        }
-        if (!session.dentistName) {
-          console.log('✅ [POST-PROCESS] Updating dentistName from extracted:', finalDentist);
-          sessionManager.updateSession(conversationId, { 
-            dentistName: finalDentist,
-            dentistType: finalTreatment === 'Braces Maintenance' ? 'braces' : 'general',
-          });
-        }
-        // Now check availability with complete information
-        const datePreference = parseDateTimePreference(validated.dateTimeText);
-        console.log('🔄 [POST-PROCESS] Parsed date preference:', datePreference);
-        if (datePreference.date || datePreference.time) {
-          return await this.checkAvailability(conversationId, session, validated.dateTimeText);
-        }
+      // Ensure treatment is set in session
+      if (!currentSession.treatmentType) {
+        const treatmentToUse = validated.treatmentType || 'Consultation';
+        console.log('✅ [POST-PROCESS] Setting treatment in session:', treatmentToUse);
+        sessionManager.updateSession(conversationId, { treatmentType: treatmentToUse });
       }
+      
+      // Use date/time preference if provided, otherwise use 'anytime' for ASAP
+      const dateTimePreference = validated.dateTimeText || 'anytime';
+      console.log('🔄 [POST-PROCESS] Checking availability with preference:', dateTimePreference);
+      
+      // Get fresh session after updates
+      const updatedSession = sessionManager.getSession(conversationId);
+      return await this.checkAvailability(conversationId, updatedSession, dateTimePreference);
     }
 
     // Handle confirmation - More robust detection
@@ -1069,8 +1070,22 @@ Always confirm appointment details before booking. Only say an appointment is "s
     
     if (session.selectedSlot && session.confirmationStatus === 'pending') {
       if (isConfirmation) {
+        // REQUIREMENT: Patient name is mandatory before confirming booking
+        const currentSessionForBooking = sessionManager.getSession(conversationId);
+        if (!currentSessionForBooking.patientName && !validated.patientName) {
+          console.log('⚠️ [POST-PROCESS] Patient name missing before confirmation, prompting');
+          return 'Before I confirm your appointment, I need your name. What is your name?';
+        }
+        
+        // Update patient name if extracted in this message
+        if (validated.patientName && !currentSessionForBooking.patientName) {
+          console.log('✅ [POST-PROCESS] Updating patientName before booking:', validated.patientName);
+          sessionManager.updateSession(conversationId, { patientName: validated.patientName });
+        }
+        
         console.log('✅ [POST-PROCESS] User confirmed, proceeding to booking');
-        return await this.confirmBooking(conversationId, session);
+        const finalSession = sessionManager.getSession(conversationId);
+        return await this.confirmBooking(conversationId, finalSession);
       } else if (isDecline) {
         console.log('❌ [POST-PROCESS] User declined, clearing selectedSlot');
         sessionManager.updateSession(conversationId, { 
@@ -1082,12 +1097,27 @@ Always confirm appointment details before booking. Only say an appointment is "s
     } else if (isConfirmation && latestIntents.includes('booking') && !session.selectedSlot) {
       // Fallback: User confirmed but no slot selected - need to check availability first
       console.log('⚠️ [POST-PROCESS] User confirmed but no slot selected, checking availability...');
-      if (session.treatmentType && session.dentistName) {
-        return await this.checkAvailability(conversationId, session, 'anytime');
-      } else {
-        console.log('⚠️ [POST-PROCESS] Missing treatment or dentist, cannot check availability');
-        return 'I need a bit more information to book your appointment. What treatment do you need, and which dentist would you prefer?';
+      
+      // REQUIREMENT: Patient name is mandatory
+      if (!session.patientName && !validated.patientName) {
+        console.log('⚠️ [POST-PROCESS] Patient name missing, prompting');
+        return 'Before I can book your appointment, I need your name. What is your name?';
       }
+      
+      // REQUIREMENT: Default to Consultation if treatment not specified
+      const treatmentToUse = session.treatmentType || 'Consultation';
+      if (!session.treatmentType) {
+        sessionManager.updateSession(conversationId, { treatmentType: 'Consultation' });
+      }
+      
+      // Update patient name if extracted
+      if (validated.patientName && !session.patientName) {
+        sessionManager.updateSession(conversationId, { patientName: validated.patientName });
+      }
+      
+      const updatedSession = sessionManager.getSession(conversationId);
+      // REQUIREMENT: Auto-select dentist, don't require user to specify
+      return await this.checkAvailability(conversationId, updatedSession, 'anytime');
     }
 
     // Handle cancellation (only if cancel intent exists in validated latest intents)
@@ -1193,11 +1223,42 @@ Always confirm appointment details before booking. Only say an appointment is "s
       );
       console.log('📅 [AVAILABILITY] Calculated treatment duration:', treatmentDuration, 'minutes');
 
-      const availableDentists = getAvailableDentists(session.treatmentType);
-      console.log('📅 [AVAILABILITY] Available dentists for treatment:', availableDentists);
+      // CACHING STRATEGY: Check if we have fresh cached slots (< 2 minutes old)
+      const CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
+      const now = Date.now();
+      const cacheAge = session.availableSlotsTimestamp ? (now - session.availableSlotsTimestamp) : Infinity;
+      const hasCachedSlots = session.availableSlots && Array.isArray(session.availableSlots) && session.availableSlots.length > 0;
+      const cacheIsFresh = cacheAge < CACHE_TTL_MS;
       
-      const slots = await googleCalendarService.getAvailableSlots(session.treatmentType, availableDentists);
-      console.log('📅 [AVAILABILITY] Total slots found:', slots.length);
+      console.log('📅 [AVAILABILITY] Cache check:', {
+        hasCachedSlots,
+        cacheAge: cacheAge < Infinity ? `${Math.round(cacheAge / 1000)}s` : 'N/A',
+        cacheIsFresh,
+        cachedSlotsCount: session.availableSlots?.length || 0
+      });
+      
+      let slots;
+      if (hasCachedSlots && cacheIsFresh) {
+        // Use cached slots - they're fresh enough
+        slots = session.availableSlots;
+        console.log('✅ [AVAILABILITY] Using cached slots (fresh, age:', Math.round(cacheAge / 1000), 'seconds)');
+      } else {
+        // Fetch fresh slots from API
+        const availableDentists = getAvailableDentists(session.treatmentType);
+        console.log('📅 [AVAILABILITY] Available dentists for treatment:', availableDentists);
+        console.log('📅 [AVAILABILITY] Fetching fresh slots from API...');
+        
+        slots = await googleCalendarService.getAvailableSlots(session.treatmentType, availableDentists);
+        console.log('📅 [AVAILABILITY] Total slots found:', slots.length);
+        
+        // Cache the slots with timestamp
+        sessionManager.updateSession(conversationId, { 
+          availableSlots: slots,
+          availableSlotsTimestamp: now
+        });
+        console.log('✅ [AVAILABILITY] Cached slots with timestamp:', new Date(now).toISOString());
+      }
+      
       if (slots.length > 0) {
         console.log('📅 [AVAILABILITY] First few slots:', slots.slice(0, 3).map(s => ({
           doctor: s.doctor,
@@ -1205,8 +1266,12 @@ Always confirm appointment details before booking. Only say an appointment is "s
           duration: s.duration
         })));
       }
-      
-      sessionManager.updateSession(conversationId, { availableSlots: slots });
+
+      // REQUIREMENT: Auto-select dentist if not specified - find earliest availability across all dentists
+      let dentistToUse = session.dentistName;
+      if (!dentistToUse) {
+        console.log('📅 [AVAILABILITY] No dentist specified, will auto-select based on earliest availability');
+      }
 
       // Try to find slot matching user preference
       let selectedSlot = null;
@@ -1218,24 +1283,30 @@ Always confirm appointment details before booking. Only say an appointment is "s
         time: datePreference.time ? `${datePreference.time.hours}:${datePreference.time.minutes}` : null
       });
       
-      // Filter slots to only include the selected dentist AND within working hours (9 AM - 6 PM)
+      // Filter slots within working hours (9 AM - 6 PM)
       const workingStartMinutes = 9 * 60; // 9:00 AM
       const workingEndMinutes = 18 * 60; // 6:00 PM
       
-      const dentistSlots = slots.filter(slot => {
-        if (slot.doctor !== session.dentistName) return false;
+      // REQUIREMENT: If dentist not specified, consider all available dentists
+      // Otherwise, filter by selected dentist
+      const validSlots = slots.filter(slot => {
+        // If dentist specified, only include that dentist's slots
+        if (dentistToUse && slot.doctor !== dentistToUse) return false;
+        // Filter by working hours
         const hour = slot.startTime.getHours();
         const minute = slot.startTime.getMinutes();
         const timeMinutes = hour * 60 + minute;
         return timeMinutes >= workingStartMinutes && timeMinutes < workingEndMinutes;
       });
-      console.log('📅 [AVAILABILITY] Slots for selected dentist (' + session.dentistName + ') within working hours:', dentistSlots.length);
+      
+      console.log('📅 [AVAILABILITY] Valid slots (dentist:', dentistToUse || 'any', ', within working hours):', validSlots.length);
       
       // If user specified a preference, try to match it
       if (datePreference.date || datePreference.time) {
         console.log('📅 [AVAILABILITY] User specified preference, matching slots...');
-        // Find slots matching preference AND with sufficient duration AND for the correct dentist AND within working hours
-        const matchingSlots = dentistSlots.filter(slot => {
+        // Find slots matching preference AND with sufficient duration AND within working hours
+        // REQUIREMENT: Consider all dentists if none specified
+        const matchingSlots = validSlots.filter(slot => {
           const matches = matchesDateTimePreference(slot.startTime, datePreference) &&
                          slot.duration >= treatmentDuration;
           if (matches) {
@@ -1253,7 +1324,9 @@ Always confirm appointment details before booking. Only say an appointment is "s
         console.log('📅 [AVAILABILITY] Matching slots count:', matchingSlots.length);
         
         if (matchingSlots.length > 0) {
+          // REQUIREMENT: Auto-select dentist with earliest matching slot
           selectedSlot = matchingSlots[0]; // Take first matching slot (best match)
+          dentistToUse = selectedSlot.doctor; // Auto-select this dentist
           console.log('✅ [AVAILABILITY] Selected slot from preference match:', {
             doctor: selectedSlot.doctor,
             startTime: selectedSlot.startTime.toISOString(),
@@ -1264,14 +1337,15 @@ Always confirm appointment details before booking. Only say an appointment is "s
         }
       }
 
-      // Fallback: If no preference match or no preference specified, use earliest available
-      // This ensures we always suggest something if slots are available
-      // Only consider slots for the selected dentist
+      // REQUIREMENT: Fallback to ASAP (earliest available) if no preference match or no preference specified
       if (!selectedSlot) {
-        console.log('📅 [AVAILABILITY] No preference match, finding earliest available slot...');
-        selectedSlot = googleCalendarService.findEarliestAvailableSlot(dentistSlots, treatmentDuration);
+        console.log('📅 [AVAILABILITY] No preference match, finding earliest available slot (ASAP)...');
+        // REQUIREMENT: Find earliest across all dentists if none specified
+        selectedSlot = googleCalendarService.findEarliestAvailableSlot(validSlots, treatmentDuration);
         if (selectedSlot) {
-          console.log('✅ [AVAILABILITY] Selected earliest available slot:', {
+          // REQUIREMENT: Auto-select dentist with earliest availability
+          dentistToUse = selectedSlot.doctor;
+          console.log('✅ [AVAILABILITY] Selected earliest available slot (ASAP):', {
             doctor: selectedSlot.doctor,
             startTime: selectedSlot.startTime.toISOString(),
             duration: selectedSlot.duration
@@ -1279,6 +1353,16 @@ Always confirm appointment details before booking. Only say an appointment is "s
         } else {
           console.log('❌ [AVAILABILITY] No available slots found');
         }
+      }
+      
+      // REQUIREMENT: Update session with auto-selected dentist if not already set
+      if (dentistToUse && !session.dentistName) {
+        console.log('✅ [AVAILABILITY] Auto-selecting dentist:', dentistToUse);
+        const dentistType = session.treatmentType === 'Braces Maintenance' ? 'braces' : 'general';
+        sessionManager.updateSession(conversationId, { 
+          dentistName: dentistToUse,
+          dentistType: dentistType
+        });
       }
 
       if (selectedSlot) {
@@ -1343,6 +1427,12 @@ Always confirm appointment details before booking. Only say an appointment is "s
           confirmationStatus: verifySession.confirmationStatus,
           slotStartTime: verifySession.selectedSlot?.startTime?.toISOString()
         });
+
+        // REQUIREMENT: Check patient name before offering confirmation
+        if (!verifySession.patientName) {
+          console.log('⚠️ [AVAILABILITY] Patient name missing, prompting before showing slot');
+          return 'I found an available slot, but I need your name first. What is your name?';
+        }
 
         return `I found an available slot:\n\nDoctor: ${selectedSlot.doctor}\nDate: ${selectedSlot.startTime.toLocaleDateString()}\nTime: ${selectedSlot.startTime.toLocaleTimeString()} - ${endTime.toLocaleTimeString()}\nDuration: ${treatmentDuration} minutes\n\nWould you like to confirm this appointment?`;
       } else {
@@ -1425,6 +1515,12 @@ Always confirm appointment details before booking. Only say an appointment is "s
    */
   async confirmBooking(conversationId, session) {
     try {
+      // REQUIREMENT: Patient name is mandatory - defensive check
+      if (!session.patientName || session.patientName.trim().length === 0) {
+        console.log('❌ [BOOKING] Patient name is mandatory but missing');
+        return 'I apologize, but I need your name to confirm the appointment. What is your name?';
+      }
+      
       const calendarId = config.calendar.dentistCalendars[session.dentistName];
       if (!calendarId) {
         throw new Error(`Calendar ID not found for ${session.dentistName}`);
@@ -1445,11 +1541,20 @@ Always confirm appointment details before booking. Only say an appointment is "s
       );
       console.log('✅ [BOOKING] Treatment duration:', treatmentDuration, 'minutes');
       
+      // REQUIREMENT: Always re-validate with fresh API call before booking (safety check)
+      // Don't use cache here - we need the absolute latest availability to prevent conflicts
       const availableDentists = getAvailableDentists(session.treatmentType);
-      console.log('✅ [BOOKING] Re-checking availability...');
+      console.log('✅ [BOOKING] Re-checking availability with fresh API call (safety validation)...');
       const currentSlots = await googleCalendarService.getAvailableSlots(session.treatmentType, availableDentists);
       const dentistSlots = currentSlots.filter(slot => slot.doctor === session.dentistName);
       console.log('✅ [BOOKING] Current available slots for dentist:', dentistSlots.length);
+      
+      // Update cache with fresh data after re-validation
+      sessionManager.updateSession(conversationId, { 
+        availableSlots: currentSlots,
+        availableSlotsTimestamp: Date.now()
+      });
+      console.log('✅ [BOOKING] Cache updated with fresh slots');
       
       // Check if the selected slot is still available
       const slotStillAvailable = dentistSlots.some(slot => {
