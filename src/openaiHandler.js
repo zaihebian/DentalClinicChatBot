@@ -991,6 +991,7 @@ IMPORTANT RULES:
         }
         // Note: If dentist not available for treatment, silently ignore (don't update session)
       }
+    }
     // REQUIREMENT: Don't require dentist selection - auto-select based on earliest availability
     // Removed: Prompt user to choose dentist - we'll auto-select in checkAvailability
 
