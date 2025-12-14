@@ -1013,15 +1013,50 @@ IMPORTANT RULES:
     const noSlotPending = !currentSession.selectedSlot;
     const hasPatientName = currentSession.patientName || validated.patientName;
     
+    // Check if CURRENT message is booking-related (not just session has old booking intent)
+    // This prevents checking availability on casual messages like "hi" when session still has booking intent
+    const msgLower = userMessage.toLowerCase().trim();
+    const isBookingRelatedMessage = 
+      validatedLatestIntents.includes('booking') || // Current message has booking intent
+      validated.dateTimeText || // User mentioned date/time
+      validated.patientName && hasBookingIntent || // User provided name AND session has booking intent
+      msgLower.includes('appointment') || 
+      msgLower.includes('book') || 
+      msgLower.includes('schedule') ||
+      msgLower.includes('available') ||
+      (msgLower.includes('time') && (msgLower.includes('when') || msgLower.includes('what')));
+    
+    console.log('🔄 [POST-PROCESS] Booking check:', {
+      hasBookingIntent,
+      isBookingRelatedMessage,
+      hasTreatment,
+      hasPatientName,
+      noSlotPending,
+      extractedPatientName: !!validated.patientName,
+      extractedDateTime: !!validated.dateTimeText,
+      message: userMessage.substring(0, 50)
+    });
+    
     // REQUIREMENT: Check for patient name before proceeding with booking
-    if (hasBookingIntent && !hasPatientName && !validated.patientName) {
+    // Only check if this is actually a booking-related message OR if session has booking intent
+    if ((isBookingRelatedMessage || hasBookingIntent) && !hasPatientName && !validated.patientName) {
       console.log('⚠️ [POST-PROCESS] Patient name is mandatory but missing, prompting user');
       return 'To book your appointment, I need your name. What is your name?';
     }
     
-    // If booking intent and treatment is set (or defaulted to Consultation), check availability
-    if (hasBookingIntent && hasTreatment && noSlotPending && hasPatientName) {
-      console.log('🔄 [POST-PROCESS] Booking intent detected, checking availability');
+    // Only check availability if:
+    // 1. (CURRENT message is booking-related OR user provided name/date when session has booking intent) AND
+    // 2. Treatment is set AND
+    // 3. No slot pending AND
+    // 4. Patient name exists
+    // This prevents checking availability on casual messages like "hi" but allows it when user provides name
+    const shouldCheckAvailability = (isBookingRelatedMessage || (hasBookingIntent && (validated.patientName || validated.dateTimeText))) && 
+                                    hasTreatment && 
+                                    noSlotPending && 
+                                    hasPatientName;
+    
+    if (shouldCheckAvailability) {
+      console.log('🔄 [POST-PROCESS] Booking-related message detected, checking availability');
       
       // Ensure treatment is set in session
       if (!currentSession.treatmentType) {
@@ -1341,18 +1376,25 @@ IMPORTANT RULES:
       // REQUIREMENT: Fallback to ASAP (earliest available) if no preference match or no preference specified
       if (!selectedSlot) {
         console.log('📅 [AVAILABILITY] No preference match, finding earliest available slot (ASAP)...');
-        // REQUIREMENT: Find earliest across all dentists if none specified
-        selectedSlot = googleCalendarService.findEarliestAvailableSlot(validSlots, treatmentDuration);
-        if (selectedSlot) {
-          // REQUIREMENT: Auto-select dentist with earliest availability
-          dentistToUse = selectedSlot.doctor;
-          console.log('✅ [AVAILABILITY] Selected earliest available slot (ASAP):', {
-            doctor: selectedSlot.doctor,
-            startTime: selectedSlot.startTime.toISOString(),
-            duration: selectedSlot.duration
-          });
+        console.log('📅 [AVAILABILITY] Valid slots available:', validSlots.length, 'Treatment duration needed:', treatmentDuration);
+        
+        if (validSlots.length === 0) {
+          console.log('❌ [AVAILABILITY] No valid slots found (empty array)');
         } else {
-          console.log('❌ [AVAILABILITY] No available slots found');
+          // REQUIREMENT: Find earliest across all dentists if none specified
+          selectedSlot = googleCalendarService.findEarliestAvailableSlot(validSlots, treatmentDuration);
+          if (selectedSlot) {
+            // REQUIREMENT: Auto-select dentist with earliest availability
+            dentistToUse = selectedSlot.doctor;
+            console.log('✅ [AVAILABILITY] Selected earliest available slot (ASAP):', {
+              doctor: selectedSlot.doctor,
+              startTime: selectedSlot.startTime.toISOString(),
+              duration: selectedSlot.duration
+            });
+          } else {
+            console.log('❌ [AVAILABILITY] No slots found with sufficient duration');
+            console.log('📅 [AVAILABILITY] Available slot durations:', validSlots.slice(0, 5).map(s => s.duration));
+          }
         }
       }
       
@@ -1437,7 +1479,13 @@ IMPORTANT RULES:
 
         return `I found an available slot:\n\nDoctor: ${selectedSlot.doctor}\nDate: ${selectedSlot.startTime.toLocaleDateString()}\nTime: ${selectedSlot.startTime.toLocaleTimeString()} - ${endTime.toLocaleTimeString()}\nDuration: ${treatmentDuration} minutes\n\nWould you like to confirm this appointment?`;
       } else {
-        console.log('❌ [AVAILABILITY] No slots available, returning error message');
+        console.log('❌ [AVAILABILITY] No slots available');
+        console.log('📅 [AVAILABILITY] Debug info:', {
+          totalSlots: slots.length,
+          validSlots: validSlots.length,
+          treatmentDuration,
+          dentistToUse: dentistToUse || 'none (auto-select)'
+        });
         return 'I apologize, but I could not find an available slot at the moment. Would you like me to check for a different time, or would you prefer to contact our receptionist directly?';
       }
     } catch (error) {
