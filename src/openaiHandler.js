@@ -91,6 +91,22 @@ class OpenAIHandler {
   async generateResponse(conversationId, userMessage, phoneNumber) {
     const session = sessionManager.getSession(conversationId);
     
+    console.log('\n🚀 [GENERATE RESPONSE] Starting response generation');
+    console.log('🚀 [GENERATE RESPONSE] User message:', userMessage);
+    console.log('🚀 [GENERATE RESPONSE] Current session state:', {
+      treatmentType: session.treatmentType,
+      dentistName: session.dentistName,
+      patientName: session.patientName,
+      intents: session.intents,
+      selectedSlot: session.selectedSlot ? {
+        startTime: session.selectedSlot.startTime.toISOString(),
+        endTime: session.selectedSlot.endTime?.toISOString(),
+        doctor: session.selectedSlot.doctor
+      } : null,
+      confirmationStatus: session.confirmationStatus,
+      eventId: session.eventId
+    });
+    
     // Update phone if not set
     if (!session.phone) {
       sessionManager.updateSession(conversationId, { phone: phoneNumber });
@@ -145,9 +161,28 @@ class OpenAIHandler {
       });
 
       let aiResponse = completion.choices[0]?.message?.content || 'I apologize, I did not understand that. Could you please rephrase?';
+      
+      console.log('🤖 [AI RESPONSE] Raw AI response:', aiResponse.substring(0, 200));
 
       // Post-process response using only the latest intents (from current message or kept from previous)
-      aiResponse = await this.postProcessResponse(conversationId, userMessage, aiResponse, session, latestIntents);
+      // Get fresh session state before post-processing (session may have been updated)
+      const currentSession = sessionManager.getSession(conversationId);
+      aiResponse = await this.postProcessResponse(conversationId, userMessage, aiResponse, currentSession, latestIntents);
+      
+      console.log('✅ [AI RESPONSE] Final response after post-processing:', aiResponse.substring(0, 200));
+      
+      // Check if AI claimed scheduling without actually booking
+      const claimedScheduled = /(scheduled|booked|confirmed|appointment is set)/i.test(aiResponse);
+      const finalSession = sessionManager.getSession(conversationId);
+      const hasEventId = finalSession.eventId;
+      if (claimedScheduled && !hasEventId) {
+        console.log('⚠️ [AI RESPONSE] WARNING: AI claimed scheduling but no event ID found - this may be a false claim');
+        console.log('⚠️ [AI RESPONSE] Session state:', {
+          hasSelectedSlot: !!finalSession.selectedSlot,
+          confirmationStatus: finalSession.confirmationStatus,
+          eventId: finalSession.eventId
+        });
+      }
 
       // Add AI response to history
       sessionManager.addMessage(conversationId, 'assistant', aiResponse);
@@ -268,7 +303,11 @@ JSON array:`;
 
       const response = completion.choices[0]?.message?.content?.trim();
       
+      console.log('🔍 [INTENT DETECTION] AI Response:', response);
+      console.log('🔍 [INTENT DETECTION] Existing intents:', session.intents);
+      
       if (!response) {
+        console.log('⚠️ [INTENT DETECTION] No AI response, using fallback');
         return this.fallbackIntentDetection(message, session);
       }
 
@@ -294,12 +333,16 @@ JSON array:`;
           }
         }
 
+        console.log('🔍 [INTENT DETECTION] Parsed intents:', intents);
+
         // Validate intents format and content (defense in depth)
         // Filters out invalid types, non-string values, and duplicates
         const validIntents = ['booking', 'cancel', 'reschedule', 'price_inquiry'];
         const filteredIntents = intents
           .filter(intent => typeof intent === 'string' && validIntents.includes(intent))
           .filter((intent, index, self) => self.indexOf(intent) === index); // Remove duplicates
+        
+        console.log('🔍 [INTENT DETECTION] Filtered intents:', filteredIntents);
         
         // Default to booking if no intents and this seems like a new request
         // Edge case: Don't default if message is just a confirmation (yes/no)
@@ -309,9 +352,13 @@ JSON array:`;
           const isConfirmation = /^(yes|ok|okay|sure|yep|yeah|alright|confirm|confirmed|no|nope)$/i.test(message.trim());
           if (!isConfirmation && message.trim().length > 2) {
             filteredIntents.push('booking');
+            console.log('🔍 [INTENT DETECTION] No intents found, defaulting to booking');
+          } else {
+            console.log('🔍 [INTENT DETECTION] Message is confirmation, not defaulting to booking');
           }
         }
 
+        console.log('✅ [INTENT DETECTION] Final intents:', filteredIntents);
         return filteredIntents;
       } catch (parseError) {
         console.warn('Failed to parse AI intent response, using fallback:', parseError);
@@ -497,15 +544,22 @@ ${contextInfo.length > 0 ? `Current session context: ${contextInfo.join(', ')}` 
 Extract the following information from the user message:
 1. Patient name: Extract if mentioned (e.g., "I'm John", "my name is Jane Doe", "this is Mike")
 2. Treatment type: One of: ${treatmentTypes.join(', ')} or null if not mentioned
+   - Map symptoms to treatment: "toothache", "pain", "hurt", "ache", "sore" → "Consultation"
+   - "cleaning", "clean", "teeth cleaning" → "Cleaning"
+   - "filling", "fill", "cavity", "cavities" → "Filling"
+   - "braces", "braces maintenance", "orthodontic", "orthodontics" → "Braces Maintenance"
 3. Dentist name: One of the available dentists or null if not mentioned
+   - Match variations: "GeneralA", "Dr GeneralA", "Dr. GeneralA", "General A" → "Dr GeneralA"
+   - Match variations: "BracesA", "Dr BracesA", "Dr. BracesA", "Braces A" → "Dr BracesA"
+   - Same pattern for GeneralB and BracesB
 4. Number of teeth: Integer 1-32 if mentioned (only relevant for fillings), null otherwise
-5. Date/time text: Extract any date/time preferences as raw text (e.g., "tomorrow at 10am", "next Tuesday 1pm", "12/25 at 3pm") or null
+5. Date/time text: Extract any date/time preferences as raw text (e.g., "tomorrow at 10am", "next Tuesday 1pm", "12/25 at 3pm", "morning", "afternoon", "anytime") or null
 
 Rules:
 - Only extract information that is explicitly mentioned or clearly implied
 - For patient name, extract full name if given (first and last)
-- For treatment, use exact treatment type names
-- For dentist, match exactly to available dentist names
+- For treatment, use exact treatment type names (map symptoms like "toothache" to "Consultation")
+- For dentist, match exactly to available dentist names (handle "Dr" prefix variations)
 - For number of teeth, only extract if clearly about fillings/treatment
 - For date/time, extract the full phrase as user said it (will be parsed separately)
 
@@ -540,7 +594,15 @@ JSON object:`;
 
       const response = completion.choices[0]?.message?.content?.trim();
       
+      console.log('📝 [INFO EXTRACTION] AI Response:', response);
+      console.log('📝 [INFO EXTRACTION] Current session:', {
+        treatmentType: session.treatmentType,
+        dentistName: session.dentistName,
+        patientName: session.patientName
+      });
+      
       if (!response) {
+        console.log('⚠️ [INFO EXTRACTION] No AI response, returning nulls');
         return { patientName: null, treatmentType: null, dentistName: null, numberOfTeeth: null, dateTimeText: null };
       }
 
@@ -549,6 +611,7 @@ JSON object:`;
         const jsonMatch = response.match(/\{[\s\S]*\}/);
         if (jsonMatch) {
           const extracted = JSON.parse(jsonMatch[0]);
+          console.log('📝 [INFO EXTRACTION] Raw extracted:', extracted);
           
           // Comprehensive validation and cleaning of extracted data
           const validated = {
@@ -566,6 +629,9 @@ JSON object:`;
             const cleaned = extracted.patientName.trim();
             if (cleaned.length >= 2 && cleaned.length <= 100 && /^[a-zA-Z\s'-]+$/.test(cleaned)) {
               validated.patientName = cleaned;
+              console.log('✅ [INFO EXTRACTION] Validated patientName:', validated.patientName);
+            } else {
+              console.log('❌ [INFO EXTRACTION] Invalid patientName:', cleaned);
             }
           }
 
@@ -573,12 +639,18 @@ JSON object:`;
           // Prevents invalid treatment types that could break business logic
           if (typeof extracted.treatmentType === 'string' && treatmentTypes.includes(extracted.treatmentType)) {
             validated.treatmentType = extracted.treatmentType;
+            console.log('✅ [INFO EXTRACTION] Validated treatmentType:', validated.treatmentType);
+          } else if (extracted.treatmentType) {
+            console.log('❌ [INFO EXTRACTION] Invalid treatmentType:', extracted.treatmentType);
           }
 
           // Validate dentist name: must be exact match from available dentists
           // Prevents invalid dentist names that don't exist in calendar config
           if (typeof extracted.dentistName === 'string' && availableDentists.includes(extracted.dentistName)) {
             validated.dentistName = extracted.dentistName;
+            console.log('✅ [INFO EXTRACTION] Validated dentistName:', validated.dentistName);
+          } else if (extracted.dentistName) {
+            console.log('❌ [INFO EXTRACTION] Invalid dentistName:', extracted.dentistName);
           }
 
           // Validate number of teeth: integer, 1-32 range (human teeth count)
@@ -588,6 +660,9 @@ JSON object:`;
               extracted.numberOfTeeth > 0 && 
               extracted.numberOfTeeth <= 32) {
             validated.numberOfTeeth = extracted.numberOfTeeth;
+            console.log('✅ [INFO EXTRACTION] Validated numberOfTeeth:', validated.numberOfTeeth);
+          } else if (extracted.numberOfTeeth !== null && extracted.numberOfTeeth !== undefined) {
+            console.log('❌ [INFO EXTRACTION] Invalid numberOfTeeth:', extracted.numberOfTeeth);
           }
 
           // Validate date/time text: string, reasonable length (3-200 chars)
@@ -597,9 +672,13 @@ JSON object:`;
             const cleaned = extracted.dateTimeText.trim();
             if (cleaned.length >= 3 && cleaned.length <= 200) {
               validated.dateTimeText = cleaned;
+              console.log('✅ [INFO EXTRACTION] Validated dateTimeText:', validated.dateTimeText);
+            } else {
+              console.log('❌ [INFO EXTRACTION] Invalid dateTimeText length:', cleaned.length);
             }
           }
 
+          console.log('✅ [INFO EXTRACTION] Final validated:', validated);
           return validated;
         }
       } catch (parseError) {
@@ -668,6 +747,10 @@ Guidelines:
 - Confirm details before taking actions
 - Keep responses concise and clear
 - Use the patient's name when you know it
+- NEVER claim an appointment is scheduled, booked, or confirmed unless you have actually created a calendar event
+- If a slot is pending confirmation, ask the user to confirm - do not claim it's already scheduled
+- Working hours are 9:00 AM - 6:00 PM, Monday-Friday only
+- NEVER suggest appointment times outside working hours (before 9 AM or after 6 PM, or weekends)
 
 Current conversation context:
 `;
@@ -685,7 +768,11 @@ Current conversation context:
       prompt += `- Dentist: ${session.dentistName}\n`;
     }
     if (session.selectedSlot) {
-      prompt += `- Selected slot: ${session.selectedSlot.startTime.toLocaleString()}\n`;
+      prompt += `- Selected slot (pending confirmation): ${session.selectedSlot.startTime.toLocaleString()}\n`;
+      prompt += `- IMPORTANT: This slot is PENDING confirmation. Ask user to confirm, do NOT claim it's already scheduled.\n`;
+    }
+    if (session.confirmationStatus === 'pending') {
+      prompt += `- Status: Waiting for user confirmation of the selected slot\n`;
     }
 
     prompt += `\nAvailable dentists for braces: Dr BracesA, Dr BracesB
@@ -697,7 +784,11 @@ Treatment durations:
 - Braces Maintenance: 45 min (Dr BracesB), 15 min (Dr BracesA)
 - Filling: 30 min for first tooth + 15 min per additional tooth
 
-Always confirm appointment details before booking.`;
+Working hours: 9:00 AM - 6:00 PM, Monday-Friday (weekends excluded)
+Minimum appointment time: 9:00 AM
+Maximum appointment time: 6:00 PM
+
+Always confirm appointment details before booking. Only say an appointment is "scheduled" or "confirmed" after the system has actually created a calendar event.`;
 
     return prompt;
   }
@@ -783,6 +874,17 @@ Always confirm appointment details before booking.`;
   async postProcessResponse(conversationId, userMessage, aiResponse, session, latestIntents = []) {
     const msg = userMessage.toLowerCase();
 
+    console.log('\n🔄 [POST-PROCESS] Starting post-processing');
+    console.log('🔄 [POST-PROCESS] User message:', userMessage);
+    console.log('🔄 [POST-PROCESS] Latest intents:', latestIntents);
+    console.log('🔄 [POST-PROCESS] Current session state:', {
+      treatmentType: session.treatmentType,
+      dentistName: session.dentistName,
+      patientName: session.patientName,
+      selectedSlot: session.selectedSlot ? `${session.selectedSlot.startTime.toISOString()}` : null,
+      confirmationStatus: session.confirmationStatus
+    });
+
     // Validate latestIntents format (defense in depth)
     const validIntents = ['booking', 'cancel', 'reschedule', 'price_inquiry'];
     const validatedLatestIntents = Array.isArray(latestIntents)
@@ -790,6 +892,8 @@ Always confirm appointment details before booking.`;
           .filter(intent => typeof intent === 'string' && validIntents.includes(intent))
           .filter((intent, index, self) => self.indexOf(intent) === index) // Remove duplicates
       : [];
+
+    console.log('🔄 [POST-PROCESS] Validated intents:', validatedLatestIntents);
 
     // Extract all information using AI (much more robust than regex)
     const extracted = await this.extractInformation(userMessage, session);
@@ -824,23 +928,28 @@ Always confirm appointment details before booking.`;
     };
 
     // Route validated information to appropriate flows
+    console.log('🔄 [POST-PROCESS] Routing validated information...');
     
     // 1. Patient name → update session
     if (validated.patientName && !session.patientName) {
+      console.log('✅ [POST-PROCESS] Updating patientName:', validated.patientName);
       sessionManager.updateSession(conversationId, { patientName: validated.patientName });
     }
 
     // 2. Treatment type → update session
     // Edge case: Only update if not already set (prevents overwriting user's previous choice)
     if (validated.treatmentType && !session.treatmentType) {
+      console.log('✅ [POST-PROCESS] Updating treatmentType:', validated.treatmentType);
       sessionManager.updateSession(conversationId, { treatmentType: validated.treatmentType });
       
       // Special handling for fillings: require number of teeth
       // If filling and number of teeth already extracted, update session
       if (validated.treatmentType === 'Filling' && validated.numberOfTeeth) {
+        console.log('✅ [POST-PROCESS] Updating numberOfTeeth for filling:', validated.numberOfTeeth);
         sessionManager.updateSession(conversationId, { numberOfTeeth: validated.numberOfTeeth });
       } else if (validated.treatmentType === 'Filling' && !session.numberOfTeeth) {
         // Ask about number of teeth if not provided (required for duration calculation)
+        console.log('⚠️ [POST-PROCESS] Filling requires numberOfTeeth, asking user');
         return aiResponse + '\n\nHow many teeth need filling?';
       }
     }
@@ -853,32 +962,44 @@ Always confirm appointment details before booking.`;
       const currentTreatment = session.treatmentType || validated.treatmentType;
       if (currentTreatment) {
         const availableDentistsForTreatment = getAvailableDentists(currentTreatment);
+        console.log('🔄 [POST-PROCESS] Checking dentist availability:', {
+          dentist: validated.dentistName,
+          treatment: currentTreatment,
+          availableDentists: availableDentistsForTreatment
+        });
         // Only update if dentist is valid for this treatment type
         if (availableDentistsForTreatment.includes(validated.dentistName)) {
+          console.log('✅ [POST-PROCESS] Dentist valid, updating session');
           sessionManager.updateSession(conversationId, { 
             dentistName: validated.dentistName,
             dentistType: currentTreatment === 'Braces Maintenance' ? 'braces' : 'general',
           });
+        } else {
+          console.log('❌ [POST-PROCESS] Dentist not available for treatment type');
         }
         // Note: If dentist not available for treatment, silently ignore (don't update session)
       }
     } else if (session.treatmentType && !session.dentistName && (msg.includes('dentist') || msg.includes('doctor'))) {
       // Edge case: User mentioned dentist/doctor but AI didn't extract specific name
       // Prompt user to choose from available dentists for their treatment type
+      console.log('⚠️ [POST-PROCESS] User mentioned dentist but no name extracted, prompting');
       const availableDentistsForTreatment = getAvailableDentists(session.treatmentType);
       return `Which dentist would you like? Available options: ${availableDentistsForTreatment.join(', ')}`;
     }
 
     // 4. Number of teeth (for fillings) → update session
     if (validated.numberOfTeeth && session.treatmentType === 'Filling' && !session.numberOfTeeth) {
+      console.log('✅ [POST-PROCESS] Updating numberOfTeeth:', validated.numberOfTeeth);
       sessionManager.updateSession(conversationId, { numberOfTeeth: validated.numberOfTeeth });
     }
 
     // 5. Date/time preferences → route to dateParser, then checkAvailability
     // Edge case 1: All required info present (treatment, dentist, date/time) and no slot pending
     if (validated.dateTimeText && session.treatmentType && session.dentistName && !session.selectedSlot) {
+      console.log('🔄 [POST-PROCESS] All info present, checking availability');
       // Use dateParser to parse the extracted date/time text
       const datePreference = parseDateTimePreference(validated.dateTimeText);
+      console.log('🔄 [POST-PROCESS] Parsed date preference:', datePreference);
       if (datePreference.date || datePreference.time) {
         // Trigger availability check with parsed preference
         return await this.checkAvailability(conversationId, session, validated.dateTimeText);
@@ -887,16 +1008,21 @@ Always confirm appointment details before booking.`;
     // Edge case 2: Date/time mentioned but missing treatment or dentist - use validated values if available
     // This handles cases where user provides all info in one message: "I need cleaning with Dr. X tomorrow"
     else if (validated.dateTimeText && (session.treatmentType || validated.treatmentType) && (session.dentistName || validated.dentistName)) {
+      console.log('🔄 [POST-PROCESS] Date/time with partial info, combining session and extracted values');
       // Combine session and extracted values to get complete picture
       const finalTreatment = session.treatmentType || validated.treatmentType;
       const finalDentist = session.dentistName || validated.dentistName;
       
+      console.log('🔄 [POST-PROCESS] Combined values:', { finalTreatment, finalDentist });
+      
       if (finalTreatment && finalDentist) {
         // Ensure session has these values (update if missing)
         if (!session.treatmentType) {
+          console.log('✅ [POST-PROCESS] Updating treatmentType from extracted:', finalTreatment);
           sessionManager.updateSession(conversationId, { treatmentType: finalTreatment });
         }
         if (!session.dentistName) {
+          console.log('✅ [POST-PROCESS] Updating dentistName from extracted:', finalDentist);
           sessionManager.updateSession(conversationId, { 
             dentistName: finalDentist,
             dentistType: finalTreatment === 'Braces Maintenance' ? 'braces' : 'general',
@@ -904,19 +1030,63 @@ Always confirm appointment details before booking.`;
         }
         // Now check availability with complete information
         const datePreference = parseDateTimePreference(validated.dateTimeText);
+        console.log('🔄 [POST-PROCESS] Parsed date preference:', datePreference);
         if (datePreference.date || datePreference.time) {
           return await this.checkAvailability(conversationId, session, validated.dateTimeText);
         }
       }
     }
 
-    // Handle confirmation
+    // Handle confirmation - More robust detection
+    console.log('🔄 [POST-PROCESS] Checking confirmation conditions...');
+    console.log('🔄 [POST-PROCESS] Session state:', {
+      hasSelectedSlot: !!session.selectedSlot,
+      confirmationStatus: session.confirmationStatus,
+      selectedSlotDetails: session.selectedSlot ? {
+        startTime: session.selectedSlot.startTime?.toISOString(),
+        doctor: session.selectedSlot.doctor
+      } : null
+    });
+    
+    // Check for confirmation keywords (case-insensitive, whole word or standalone)
+    const confirmationKeywords = ['yes', 'ok', 'okay', 'sure', 'confirm', 'confirmed', 'yep', 'yeah', 'alright', 'sounds good', 'that works', 'perfect', 'great'];
+    const declineKeywords = ['no', 'nope', 'cancel', 'change', 'different', 'not', "don't", 'decline'];
+    
+    const isConfirmation = confirmationKeywords.some(keyword => {
+      const regex = new RegExp(`\\b${keyword}\\b`, 'i');
+      return regex.test(userMessage);
+    });
+    const isDecline = declineKeywords.some(keyword => {
+      const regex = new RegExp(`\\b${keyword}\\b`, 'i');
+      return regex.test(userMessage);
+    });
+    
+    console.log('🔄 [POST-PROCESS] Confirmation detection:', {
+      isConfirmation,
+      isDecline,
+      message: userMessage
+    });
+    
     if (session.selectedSlot && session.confirmationStatus === 'pending') {
-      if (msg.includes('yes') || msg.includes('confirm') || msg.includes('ok') || msg.includes('sure')) {
+      if (isConfirmation) {
+        console.log('✅ [POST-PROCESS] User confirmed, proceeding to booking');
         return await this.confirmBooking(conversationId, session);
-      } else if (msg.includes('no') || msg.includes('cancel') || msg.includes('change')) {
-        sessionManager.updateSession(conversationId, { selectedSlot: null });
+      } else if (isDecline) {
+        console.log('❌ [POST-PROCESS] User declined, clearing selectedSlot');
+        sessionManager.updateSession(conversationId, { 
+          selectedSlot: null,
+          confirmationStatus: null 
+        });
         return 'No problem. Would you like to choose a different time?';
+      }
+    } else if (isConfirmation && latestIntents.includes('booking') && !session.selectedSlot) {
+      // Fallback: User confirmed but no slot selected - need to check availability first
+      console.log('⚠️ [POST-PROCESS] User confirmed but no slot selected, checking availability...');
+      if (session.treatmentType && session.dentistName) {
+        return await this.checkAvailability(conversationId, session, 'anytime');
+      } else {
+        console.log('⚠️ [POST-PROCESS] Missing treatment or dentist, cannot check availability');
+        return 'I need a bit more information to book your appointment. What treatment do you need, and which dentist would you prefer?';
       }
     }
 
@@ -931,6 +1101,18 @@ Always confirm appointment details before booking.`;
       return aiResponse + '\n\n' + pricing.substring(0, 1000); // Limit response length
     }
 
+    // Final check: If AI claimed scheduling but no booking happened, warn and don't claim it
+    const finalSessionCheck = sessionManager.getSession(conversationId);
+    const aiClaimedScheduled = /(scheduled|booked|confirmed|appointment is set|I have scheduled)/i.test(aiResponse);
+    const actuallyScheduled = !!finalSessionCheck.eventId;
+    
+    if (aiClaimedScheduled && !actuallyScheduled && !finalSessionCheck.selectedSlot) {
+      console.log('⚠️ [POST-PROCESS] AI falsely claimed scheduling - removing claim from response');
+      // Don't let AI claim scheduling if no slot is selected
+      aiResponse = aiResponse.replace(/(I have scheduled|scheduled|booked|confirmed|appointment is set)/gi, 'I can help you schedule');
+    }
+
+    console.log('✅ [POST-PROCESS] Final response ready');
     return aiResponse;
   }
 
@@ -997,14 +1179,32 @@ Always confirm appointment details before booking.`;
    */
   async checkAvailability(conversationId, session, userMessage) {
     try {
+      console.log('\n📅 [AVAILABILITY] Starting availability check');
+      console.log('📅 [AVAILABILITY] Session:', {
+        treatmentType: session.treatmentType,
+        dentistName: session.dentistName,
+        numberOfTeeth: session.numberOfTeeth
+      });
+      
       const treatmentDuration = calculateTreatmentDuration(
         session.treatmentType,
         session.dentistName,
         session.numberOfTeeth
       );
+      console.log('📅 [AVAILABILITY] Calculated treatment duration:', treatmentDuration, 'minutes');
 
       const availableDentists = getAvailableDentists(session.treatmentType);
+      console.log('📅 [AVAILABILITY] Available dentists for treatment:', availableDentists);
+      
       const slots = await googleCalendarService.getAvailableSlots(session.treatmentType, availableDentists);
+      console.log('📅 [AVAILABILITY] Total slots found:', slots.length);
+      if (slots.length > 0) {
+        console.log('📅 [AVAILABILITY] First few slots:', slots.slice(0, 3).map(s => ({
+          doctor: s.doctor,
+          startTime: s.startTime.toISOString(),
+          duration: s.duration
+        })));
+      }
       
       sessionManager.updateSession(conversationId, { availableSlots: slots });
 
@@ -1013,40 +1213,140 @@ Always confirm appointment details before booking.`;
       
       // Parse date/time preference from user message (e.g., "tomorrow at 10am", "next Tuesday")
       const datePreference = parseDateTimePreference(userMessage);
+      console.log('📅 [AVAILABILITY] Parsed date preference:', {
+        date: datePreference.date ? datePreference.date.toISOString() : null,
+        time: datePreference.time ? `${datePreference.time.hours}:${datePreference.time.minutes}` : null
+      });
+      
+      // Filter slots to only include the selected dentist AND within working hours (9 AM - 6 PM)
+      const workingStartMinutes = 9 * 60; // 9:00 AM
+      const workingEndMinutes = 18 * 60; // 6:00 PM
+      
+      const dentistSlots = slots.filter(slot => {
+        if (slot.doctor !== session.dentistName) return false;
+        const hour = slot.startTime.getHours();
+        const minute = slot.startTime.getMinutes();
+        const timeMinutes = hour * 60 + minute;
+        return timeMinutes >= workingStartMinutes && timeMinutes < workingEndMinutes;
+      });
+      console.log('📅 [AVAILABILITY] Slots for selected dentist (' + session.dentistName + ') within working hours:', dentistSlots.length);
       
       // If user specified a preference, try to match it
       if (datePreference.date || datePreference.time) {
-        // Find slots matching preference AND with sufficient duration
-        const matchingSlots = slots.filter(slot => 
-          matchesDateTimePreference(slot.startTime, datePreference) &&
-          slot.duration >= treatmentDuration  // Ensure slot is long enough for treatment
-        );
+        console.log('📅 [AVAILABILITY] User specified preference, matching slots...');
+        // Find slots matching preference AND with sufficient duration AND for the correct dentist AND within working hours
+        const matchingSlots = dentistSlots.filter(slot => {
+          const matches = matchesDateTimePreference(slot.startTime, datePreference) &&
+                         slot.duration >= treatmentDuration;
+          if (matches) {
+            console.log('✅ [AVAILABILITY] Matching slot found:', {
+              doctor: slot.doctor,
+              startTime: slot.startTime.toISOString(),
+              hour: slot.startTime.getHours(),
+              minute: slot.startTime.getMinutes(),
+              duration: slot.duration
+            });
+          }
+          return matches;
+        });
+        
+        console.log('📅 [AVAILABILITY] Matching slots count:', matchingSlots.length);
         
         if (matchingSlots.length > 0) {
           selectedSlot = matchingSlots[0]; // Take first matching slot (best match)
+          console.log('✅ [AVAILABILITY] Selected slot from preference match:', {
+            doctor: selectedSlot.doctor,
+            startTime: selectedSlot.startTime.toISOString(),
+            duration: selectedSlot.duration
+          });
+        } else {
+          console.log('⚠️ [AVAILABILITY] No slots matched preference');
         }
       }
 
       // Fallback: If no preference match or no preference specified, use earliest available
       // This ensures we always suggest something if slots are available
+      // Only consider slots for the selected dentist
       if (!selectedSlot) {
-        selectedSlot = googleCalendarService.findEarliestAvailableSlot(slots, treatmentDuration);
+        console.log('📅 [AVAILABILITY] No preference match, finding earliest available slot...');
+        selectedSlot = googleCalendarService.findEarliestAvailableSlot(dentistSlots, treatmentDuration);
+        if (selectedSlot) {
+          console.log('✅ [AVAILABILITY] Selected earliest available slot:', {
+            doctor: selectedSlot.doctor,
+            startTime: selectedSlot.startTime.toISOString(),
+            duration: selectedSlot.duration
+          });
+        } else {
+          console.log('❌ [AVAILABILITY] No available slots found');
+        }
       }
 
       if (selectedSlot) {
+        // Validate slot is within working hours (9 AM - 6 PM)
+        const slotHour = selectedSlot.startTime.getHours();
+        const slotMinute = selectedSlot.startTime.getMinutes();
+        const slotTimeMinutes = slotHour * 60 + slotMinute;
+        const workingStartMinutes = 9 * 60; // 9:00 AM
+        const workingEndMinutes = 18 * 60; // 6:00 PM
+        
+        if (slotTimeMinutes < workingStartMinutes || slotTimeMinutes >= workingEndMinutes) {
+          console.log('❌ [AVAILABILITY] Selected slot outside working hours:', {
+            slotTime: `${slotHour}:${slotMinute}`,
+            workingHours: '9:00 - 18:00'
+          });
+          // Find next available slot within working hours
+          const validSlots = dentistSlots.filter(slot => {
+            const hour = slot.startTime.getHours();
+            const minute = slot.startTime.getMinutes();
+            const timeMinutes = hour * 60 + minute;
+            return timeMinutes >= workingStartMinutes && timeMinutes < workingEndMinutes && slot.duration >= treatmentDuration;
+          });
+          
+          if (validSlots.length > 0) {
+            selectedSlot = validSlots[0];
+            console.log('✅ [AVAILABILITY] Found valid slot within working hours:', {
+              startTime: selectedSlot.startTime.toISOString()
+            });
+          } else {
+            console.log('❌ [AVAILABILITY] No valid slots within working hours');
+            return 'I apologize, but I could not find an available slot during working hours (9:00 AM - 6:00 PM, Monday-Friday). Would you like me to check for a different time, or would you prefer to contact our receptionist directly?';
+          }
+        }
+        
         const endTime = new Date(selectedSlot.startTime);
         endTime.setMinutes(endTime.getMinutes() + treatmentDuration);
 
+        console.log('✅ [AVAILABILITY] Setting selectedSlot in session:', {
+          startTime: selectedSlot.startTime.toISOString(),
+          endTime: endTime.toISOString(),
+          doctor: selectedSlot.doctor,
+          hour: selectedSlot.startTime.getHours(),
+          minute: selectedSlot.startTime.getMinutes()
+        });
+
+        // Get fresh session to ensure we have latest state
+        const updatedSession = sessionManager.getSession(conversationId);
+        
         sessionManager.updateSession(conversationId, {
           selectedSlot: {
             ...selectedSlot,
             endTime,
           },
           treatmentDuration,
+          confirmationStatus: 'pending',
+        });
+        
+        // Verify update was successful
+        const verifySession = sessionManager.getSession(conversationId);
+        console.log('✅ [AVAILABILITY] Session updated, verification:', {
+          hasSelectedSlot: !!verifySession.selectedSlot,
+          confirmationStatus: verifySession.confirmationStatus,
+          slotStartTime: verifySession.selectedSlot?.startTime?.toISOString()
         });
 
         return `I found an available slot:\n\nDoctor: ${selectedSlot.doctor}\nDate: ${selectedSlot.startTime.toLocaleDateString()}\nTime: ${selectedSlot.startTime.toLocaleTimeString()} - ${endTime.toLocaleTimeString()}\nDuration: ${treatmentDuration} minutes\n\nWould you like to confirm this appointment?`;
       } else {
+        console.log('❌ [AVAILABILITY] No slots available, returning error message');
         return 'I apologize, but I could not find an available slot at the moment. Would you like me to check for a different time, or would you prefer to contact our receptionist directly?';
       }
     } catch (error) {
@@ -1130,6 +1430,60 @@ Always confirm appointment details before booking.`;
         throw new Error(`Calendar ID not found for ${session.dentistName}`);
       }
 
+      console.log('\n✅ [BOOKING] Starting booking confirmation');
+      console.log('✅ [BOOKING] Selected slot:', {
+        doctor: session.dentistName,
+        startTime: session.selectedSlot.startTime.toISOString(),
+        endTime: session.selectedSlot.endTime.toISOString()
+      });
+
+      // Re-validate slot is still available before creating (prevents conflicts)
+      const treatmentDuration = calculateTreatmentDuration(
+        session.treatmentType,
+        session.dentistName,
+        session.numberOfTeeth
+      );
+      console.log('✅ [BOOKING] Treatment duration:', treatmentDuration, 'minutes');
+      
+      const availableDentists = getAvailableDentists(session.treatmentType);
+      console.log('✅ [BOOKING] Re-checking availability...');
+      const currentSlots = await googleCalendarService.getAvailableSlots(session.treatmentType, availableDentists);
+      const dentistSlots = currentSlots.filter(slot => slot.doctor === session.dentistName);
+      console.log('✅ [BOOKING] Current available slots for dentist:', dentistSlots.length);
+      
+      // Check if the selected slot is still available
+      const slotStillAvailable = dentistSlots.some(slot => {
+        const slotStart = new Date(slot.startTime).getTime();
+        const slotEnd = new Date(slot.endTime).getTime();
+        const selectedStart = new Date(session.selectedSlot.startTime).getTime();
+        const selectedEnd = new Date(session.selectedSlot.endTime).getTime();
+        
+        // Slot is available if it fully contains the selected time range
+        const available = slotStart <= selectedStart && slotEnd >= selectedEnd && slot.duration >= treatmentDuration;
+        if (available) {
+          console.log('✅ [BOOKING] Slot still available:', {
+            slotStart: new Date(slotStart).toISOString(),
+            slotEnd: new Date(slotEnd).toISOString(),
+            selectedStart: new Date(selectedStart).toISOString(),
+            selectedEnd: new Date(selectedEnd).toISOString()
+          });
+        }
+        return available;
+      });
+
+      if (!slotStillAvailable) {
+        console.log('❌ [BOOKING] Slot no longer available! Clearing and finding alternatives');
+        // Slot is no longer available, clear it and ask user to choose again
+        sessionManager.updateSession(conversationId, { 
+          selectedSlot: null,
+          confirmationStatus: null 
+        });
+        const alternativeSlots = await this.checkAvailability(conversationId, session, 'anytime');
+        return 'I apologize, but that time slot is no longer available. Let me check for other available times.\n\n' + alternativeSlots;
+      }
+
+      console.log('✅ [BOOKING] Slot validated, proceeding to create calendar event');
+
       const appointmentData = {
         patientName: session.patientName || 'Patient',
         doctor: session.dentistName,
@@ -1139,13 +1493,28 @@ Always confirm appointment details before booking.`;
         endTime: session.selectedSlot.endTime,
       };
 
+      console.log('✅ [BOOKING] Creating calendar event with data:', {
+        calendarId,
+        patientName: appointmentData.patientName,
+        doctor: appointmentData.doctor,
+        treatment: appointmentData.treatment,
+        startTime: appointmentData.startTime.toISOString(),
+        endTime: appointmentData.endTime.toISOString()
+      });
+
       const result = await googleCalendarService.createAppointment(calendarId, appointmentData);
 
       if (result.success) {
+        console.log('✅ [BOOKING] Calendar event created successfully:', {
+          eventId: result.eventId
+        });
+
         sessionManager.updateSession(conversationId, {
           confirmationStatus: 'confirmed',
           eventId: result.eventId,
         });
+
+        console.log('✅ [BOOKING] Session updated with confirmation');
 
         // Log action
         await googleSheetsService.logAction({
@@ -1161,8 +1530,12 @@ Always confirm appointment details before booking.`;
           action: 'booking_created',
         });
 
+        console.log('✅ [BOOKING] Booking logged to Google Sheets');
+        console.log('✅ [BOOKING] Booking complete!');
+
         return `✅ Appointment confirmed!\n\nDoctor: ${session.dentistName}\nTreatment: ${session.treatmentType}\nDate: ${session.selectedSlot.startTime.toLocaleDateString()}\nTime: ${session.selectedSlot.startTime.toLocaleTimeString()} - ${session.selectedSlot.endTime.toLocaleTimeString()}\n\nWe look forward to seeing you!`;
       } else {
+        console.log('❌ [BOOKING] Calendar event creation failed:', result.error);
         // Log failure
         await googleSheetsService.logAction({
           conversationId,
