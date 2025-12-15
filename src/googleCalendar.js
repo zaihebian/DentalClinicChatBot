@@ -169,6 +169,8 @@ class GoogleCalendarService {
 
     for (const { name: doctor, calendarId } of calendarsToCheck) {
       try {
+        console.log(`\n🔍 [CALENDAR CHECK] Now checking calendar of ${doctor}...`);
+        
         const events = await this.calendar.events.list({
           calendarId,
           timeMin: now.toISOString(),
@@ -180,9 +182,20 @@ class GoogleCalendarService {
         const busySlots = this.parseBusySlots(events.data.items);
         const availableSlots = this.findAvailableSlots(busySlots, now, oneMonthLater, doctor);
         
+        // Log first free time slot for this doctor
+        if (availableSlots.length > 0) {
+          const firstSlot = availableSlots[0];
+          const slotDate = firstSlot.startTime.toISOString().split('T')[0];
+          const slotTime = firstSlot.startTime.toISOString().split('T')[1].substring(0, 5);
+          console.log(`✅ [CALENDAR CHECK] ${doctor} - Found ${availableSlots.length} available slot(s)`);
+          console.log(`   📍 First free time slot: ${slotDate} at ${slotTime} (Duration: ${firstSlot.duration} minutes)`);
+        } else {
+          console.log(`⚠️  [CALENDAR CHECK] ${doctor} - No available slots found`);
+        }
+        
         slots.push(...availableSlots);
       } catch (error) {
-        console.error(`Error fetching calendar for ${doctor}:`, error);
+        console.error(`❌ [CALENDAR CHECK] Error fetching calendar for ${doctor}:`, error);
       }
     }
 

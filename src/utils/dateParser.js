@@ -118,18 +118,21 @@ export function parseDateTimePreference(message, referenceDate = new Date()) {
     dateRange: null,
   };
 
+  // Track if "this" pattern was found (for day of week logic)
+  let wasThisPattern = false;
+
   // Parse relative dates
   if (msg.includes('today')) {
     result.date = new Date(referenceDate);
-    result.date.setHours(0, 0, 0, 0);
+    result.date.setUTCHours(0, 0, 0, 0);
   } else if (msg.includes('tomorrow')) {
     result.date = new Date(referenceDate);
-    result.date.setDate(result.date.getDate() + 1);
-    result.date.setHours(0, 0, 0, 0);
+    result.date.setUTCDate(result.date.getUTCDate() + 1);
+    result.date.setUTCHours(0, 0, 0, 0);
   } else if (msg.includes('next week')) {
     result.date = new Date(referenceDate);
-    result.date.setDate(result.date.getDate() + 7);
-    result.date.setHours(0, 0, 0, 0);
+    result.date.setUTCDate(result.date.getUTCDate() + 7);
+    result.date.setUTCHours(0, 0, 0, 0);
   } else {
     // Parse day of week (Monday, Tuesday, etc.)
     const dayNames = {
@@ -162,18 +165,20 @@ export function parseDateTimePreference(message, referenceDate = new Date()) {
         if (thisPattern.test(msg)) {
           targetDay = dayNum;
           isNextWeek = false;
+          wasThisPattern = true; // Mark that "this" was found
           break;
         }
       }
     }
 
     // Check for just "[day]" (assume next occurrence)
+    // If today is that day, go to next week (not today)
     if (!targetDay) {
       for (const [dayName, dayNum] of Object.entries(dayNames)) {
         const dayPattern = new RegExp(`\\b${dayName}\\b`, 'i');
         if (dayPattern.test(msg)) {
           targetDay = dayNum;
-          isNextWeek = false;
+          isNextWeek = false; // Will be handled in calculation
           break;
         }
       }
@@ -186,40 +191,60 @@ export function parseDateTimePreference(message, referenceDate = new Date()) {
       let daysToAdd = targetDay - currentDay;
 
       if (isNextWeek) {
-        // "next Tuesday" - always next week's occurrence (not this week)
-        // First find days to this week's occurrence
-        if (daysToAdd <= 0) {
-          daysToAdd += 7; // If this week's day already passed, go to next week's occurrence
-        } else {
-          // If this week's day hasn't passed yet, add 7 to skip to next week
-          daysToAdd += 7;
-        }
+        // "next [day]" - always next week's occurrence (not this week)
+        // Add 7 days to get next week's occurrence
+        daysToAdd += 7;
+        // If daysToAdd was negative (day already passed), we've added 7, which gives us next week
+        // If daysToAdd was positive (day hasn't passed), adding 7 skips to next week
+        // If daysToAdd was 0 (today), adding 7 gives us next week
       } else {
-        // "this Tuesday" or just "Tuesday" - next occurrence (could be this week or next)
-        if (daysToAdd <= 0) {
+        // "this [day]" or just "[day]" - next occurrence
+        // For "this [day]": if daysToAdd === 0, return today
+        // For just "[day]" (not "this"): if daysToAdd === 0, go to next week (not today)
+        // Check if it was "this [day]" by checking if we found "this" pattern
+        const wasThisPattern = msg.match(/\bthis\s+\w+/i);
+        
+        if (daysToAdd < 0) {
           daysToAdd += 7; // Next week if already passed this week
+        } else if (daysToAdd === 0 && !wasThisPattern) {
+          // Just "[day]" and it's today - go to next week
+          daysToAdd = 7;
         }
+        // If daysToAdd > 0, use this week's occurrence (no change needed)
+        // If daysToAdd === 0 and wasThisPattern, it's today (no change needed)
       }
 
       result.date = new Date(referenceDate);
-      result.date.setDate(result.date.getDate() + daysToAdd);
-      result.date.setHours(0, 0, 0, 0);
+      result.date.setUTCDate(result.date.getUTCDate() + daysToAdd);
+      result.date.setUTCHours(0, 0, 0, 0);
     }
   }
 
   // Parse time (simple patterns)
-  const timePatterns = [
-    /(\d{1,2})\s*(am|pm)/i,
-    /(\d{1,2}):(\d{2})\s*(am|pm)?/i,
-    /(\d{1,2})\s*(o'clock|oclock)/i,
-  ];
+  // IMPORTANT: Check more specific patterns FIRST (with minutes) before simple patterns
+  // Pattern 1: "10:30am", "2:30pm" - hours:minutes and am/pm (MUST check first)
+  const timeWithMinutesPattern = /(\d{1,2}):(\d{2})\s*(am|pm)/i;
+  let match = message.match(timeWithMinutesPattern);
+  if (match) {
+    let hours = parseInt(match[1], 10);
+    const minutes = parseInt(match[2], 10);
+    const period = match[3]?.toLowerCase();
 
-  for (const pattern of timePatterns) {
-    const match = message.match(pattern);
+    if (period === 'pm' && hours !== 12) {
+      hours += 12;
+    } else if (period === 'am' && hours === 12) {
+      hours = 0;
+    }
+
+    result.time = { hours, minutes };
+  } else {
+    // Pattern 2: "10am", "2pm" - hours and am/pm
+    const simpleTimePattern = /(\d{1,2})\s*(am|pm)/i;
+    match = message.match(simpleTimePattern);
     if (match) {
       let hours = parseInt(match[1], 10);
-      const minutes = match[2] ? parseInt(match[2], 10) : 0;
-      const period = match[3]?.toLowerCase() || match[4]?.toLowerCase();
+      const minutes = 0;
+      const period = match[2]?.toLowerCase();
 
       if (period === 'pm' && hours !== 12) {
         hours += 12;
@@ -228,32 +253,114 @@ export function parseDateTimePreference(message, referenceDate = new Date()) {
       }
 
       result.time = { hours, minutes };
-      break;
+    } else {
+      // Pattern 3: "10 o'clock", "10 oclock" - hours only
+      const oclockPattern = /(\d{1,2})\s*(o'clock|oclock)/i;
+      match = message.match(oclockPattern);
+      if (match) {
+        const hours = parseInt(match[1], 10);
+        const minutes = 0;
+        result.time = { hours, minutes };
+      } else {
+        // Pattern 4: "around 10", "at 10", "morning around 10" - just a number
+        // Only match if it's clearly a time context (not part of a date)
+        // Check for time-related words before/after the number
+        const timeContextPattern = /(?:at|around|by|before|after|morning|afternoon|evening|noon|midnight)\s*(\d{1,2})\b/i;
+        match = message.match(timeContextPattern);
+        if (match) {
+          let hours = parseInt(match[1], 10);
+          // Only parse if it's a reasonable hour (1-12)
+          if (hours >= 1 && hours <= 12) {
+            const minutes = 0;
+            // Default to AM for morning hours (1-11), PM for 12
+            // But this is ambiguous, so we'll default to AM for now
+            if (hours === 12) {
+              hours = 12; // Noon
+            }
+            result.time = { hours, minutes };
+          }
+        }
+      }
     }
   }
 
   // Parse specific dates (MM/DD, DD/MM, etc.)
-  const datePatterns = [
-    /(\d{1,2})\/(\d{1,2})/,
-    /(\d{4})-(\d{1,2})-(\d{1,2})/,
-  ];
+  // IMPORTANT: Parse dates AFTER time to avoid conflicts
+  // But only if date wasn't already set by relative/day parsing
+  if (!result.date) {
+    // Month names mapping
+    const monthNames = {
+      'january': 0, 'jan': 0,
+      'february': 1, 'feb': 1,
+      'march': 2, 'mar': 2,
+      'april': 3, 'apr': 3,
+      'may': 4,
+      'june': 5, 'jun': 5,
+      'july': 6, 'jul': 6,
+      'august': 7, 'aug': 7,
+      'september': 8, 'sep': 8, 'sept': 8,
+      'october': 9, 'oct': 9,
+      'november': 10, 'nov': 10,
+      'december': 11, 'dec': 11
+    };
 
-  for (const pattern of datePatterns) {
-    const match = message.match(pattern);
-    if (match) {
-      if (pattern === datePatterns[0]) {
-        // MM/DD or DD/MM - assume MM/DD
-        const month = parseInt(match[1], 10) - 1;
-        const day = parseInt(match[2], 10);
-        result.date = new Date(referenceDate.getFullYear(), month, day);
-      } else {
-        // YYYY-MM-DD
-        const year = parseInt(match[1], 10);
-        const month = parseInt(match[2], 10) - 1;
-        const day = parseInt(match[3], 10);
-        result.date = new Date(year, month, day);
+    // Pattern 1: "July 21st", "July 21", "21st of July", "July 21, 2024"
+    let monthNameMatch = null;
+    let dayMatch = null;
+    let yearMatch = null;
+
+    // Check for month name patterns
+    for (const [monthName, monthNum] of Object.entries(monthNames)) {
+      // Pattern: "July 21st" or "July 21"
+      const pattern1 = new RegExp(`${monthName}\\s+(\\d{1,2})(?:st|nd|rd|th)?(?:,\\s*(\\d{4}))?`, 'i');
+      let match = message.match(pattern1);
+      if (match) {
+        monthNameMatch = monthNum;
+        dayMatch = parseInt(match[1], 10);
+        yearMatch = match[2] ? parseInt(match[2], 10) : referenceDate.getUTCFullYear();
+        break;
       }
-      break;
+
+      // Pattern: "21st of July" or "21 of July"
+      const pattern2 = new RegExp(`(\\d{1,2})(?:st|nd|rd|th)?\\s+of\\s+${monthName}(?:,\\s*(\\d{4}))?`, 'i');
+      match = message.match(pattern2);
+      if (match) {
+        monthNameMatch = monthNum;
+        dayMatch = parseInt(match[1], 10);
+        yearMatch = match[2] ? parseInt(match[2], 10) : referenceDate.getUTCFullYear();
+        break;
+      }
+    }
+
+    if (monthNameMatch !== null && dayMatch !== null) {
+      const year = yearMatch || referenceDate.getUTCFullYear();
+      result.date = new Date(Date.UTC(year, monthNameMatch, dayMatch));
+    } else {
+      // Pattern 2: Numeric formats (MM/DD, YYYY-MM-DD)
+      const datePatterns = [
+        /(\d{1,2})\/(\d{1,2})/,
+        /(\d{4})-(\d{1,2})-(\d{1,2})/,
+      ];
+
+      for (const pattern of datePatterns) {
+        const match = message.match(pattern);
+        if (match) {
+          if (pattern === datePatterns[0]) {
+            // MM/DD or DD/MM - assume MM/DD
+            const month = parseInt(match[1], 10) - 1;
+            const day = parseInt(match[2], 10);
+            const year = referenceDate.getUTCFullYear();
+            result.date = new Date(Date.UTC(year, month, day));
+          } else {
+            // YYYY-MM-DD
+            const year = parseInt(match[1], 10);
+            const month = parseInt(match[2], 10) - 1;
+            const day = parseInt(match[3], 10);
+            result.date = new Date(Date.UTC(year, month, day));
+          }
+          break;
+        }
+      }
     }
   }
 
@@ -360,16 +467,20 @@ export function matchesDateTimePreference(slotDate, preference) {
 
   if (preference.date) {
     const slotDateOnly = new Date(slotDate);
-    slotDateOnly.setHours(0, 0, 0, 0);
+    slotDateOnly.setUTCHours(0, 0, 0, 0);
     const prefDateOnly = new Date(preference.date);
-    prefDateOnly.setHours(0, 0, 0, 0);
-    matches = matches && slotDateOnly.getTime() === prefDateOnly.getTime();
+    prefDateOnly.setUTCHours(0, 0, 0, 0);
+    // Compare dates by year, month, day only (ignore time)
+    matches = matches && 
+              slotDateOnly.getUTCFullYear() === prefDateOnly.getUTCFullYear() &&
+              slotDateOnly.getUTCMonth() === prefDateOnly.getUTCMonth() &&
+              slotDateOnly.getUTCDate() === prefDateOnly.getUTCDate();
   }
 
   if (preference.time) {
-    const slotHours = slotDate.getHours();
-    const slotMinutes = slotDate.getMinutes();
-    // Allow ±1 hour flexibility
+    const slotHours = slotDate.getUTCHours();
+    const slotMinutes = slotDate.getUTCMinutes();
+    // Allow ±1 hour flexibility (compare hours only, minutes don't matter)
     const hourDiff = Math.abs(slotHours - preference.time.hours);
     matches = matches && (hourDiff <= 1);
   }

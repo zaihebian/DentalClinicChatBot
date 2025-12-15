@@ -127,17 +127,37 @@ class OpenAIHandler {
         )
       : [];
     
-    // Intent management strategy: Replace old intents with new ones (don't accumulate)
-    // Edge case: If no new intents detected (e.g., "Yes" confirmation), keep existing intents for context
-    // This allows confirmations to work with ongoing booking flows
-    const latestIntents = validatedIntents.length > 0 
-      ? validatedIntents 
-      : (session.intents || []); // Keep existing if no new ones detected
+    // Handle intent detection: set intent if detected, ask clarifying question only when NO intent detected
+    const hadPreviousIntent = session.intents && session.intents.length > 0;
+    const hasNewIntent = validatedIntents.length > 0;
     
-    // Only update session if new intents were detected (prevents unnecessary updates)
-    if (validatedIntents.length > 0) {
+    // Check if user is confirming the clarifying question (responded "yes" to "Would you like to book?")
+    const isConfirmingClarification = !hadPreviousIntent && 
+                                       !hasNewIntent && 
+                                       /^(yes|ok|okay|sure|yep|yeah|alright|confirm|confirmed)$/i.test(userMessage.trim());
+    
+    if (hasNewIntent) {
+      // Intent detected - set it immediately (whether previous intent existed or not)
+      console.log('🔍 [INTENT DETECTION] Intent detected, setting intent:', validatedIntents);
       sessionManager.updateSession(conversationId, { intents: validatedIntents });
+    } else if (isConfirmingClarification) {
+      // User confirmed the clarifying question - set booking intent
+      console.log('🔍 [INTENT DETECTION] User confirmed clarifying question, setting booking intent');
+      sessionManager.updateSession(conversationId, { intents: ['booking'] });
+    } else if (!hadPreviousIntent && !hasNewIntent) {
+      // No intent detected and no previous intent - ask clarifying question
+      console.log('🔍 [INTENT DETECTION] No intent detected, asking clarifying question');
+      const clarifyingResponse = 'Would you like to book an appointment?';
+      sessionManager.addMessage(conversationId, 'assistant', clarifyingResponse);
+      await googleSheetsService.logConversationTurn(conversationId, phoneNumber, 'assistant', clarifyingResponse, session);
+      return clarifyingResponse;
     }
+    
+    // Get latest intents from session (may have been updated above)
+    const updatedSession = sessionManager.getSession(conversationId);
+    const latestIntents = updatedSession.intents && updatedSession.intents.length > 0
+      ? updatedSession.intents
+      : (validatedIntents.length > 0 ? validatedIntents : []);
     // Note: latestIntents contains only the latest intents (either new ones or kept from previous)
 
     // Build system prompt with context
@@ -167,7 +187,11 @@ class OpenAIHandler {
       // Post-process response using only the latest intents (from current message or kept from previous)
       // Get fresh session state before post-processing (session may have been updated)
       const currentSession = sessionManager.getSession(conversationId);
-      aiResponse = await this.postProcessResponse(conversationId, userMessage, aiResponse, currentSession, latestIntents);
+      // Use updated intents from session (may include confirmed clarification)
+      const intentsForPostProcess = currentSession.intents && currentSession.intents.length > 0 
+        ? currentSession.intents 
+        : latestIntents;
+      aiResponse = await this.postProcessResponse(conversationId, userMessage, aiResponse, currentSession, intentsForPostProcess);
       
       console.log('✅ [AI RESPONSE] Final response after post-processing:', aiResponse.substring(0, 200));
       
@@ -271,7 +295,7 @@ Rules:
 3. Ignore confirmations or simple responses like "yes", "ok", "sure" unless they contain new intent
 4. If message is just confirming something (yes/no), return empty array
 5. Consider conversation context - if user is already in a booking flow and says "yes", don't add new booking intent
-6. Default to "booking" ONLY if no intents detected AND this appears to be a new request (not a confirmation)
+6. DO NOT default to "booking" - if no intents detected, return empty array
 
 ${existingIntents}${conversationContext}
 User message: "${message}"
@@ -344,19 +368,8 @@ JSON array:`;
         
         console.log('🔍 [INTENT DETECTION] Filtered intents:', filteredIntents);
         
-        // Default to booking if no intents and this seems like a new request
-        // Edge case: Don't default if message is just a confirmation (yes/no)
-        // This prevents false booking intents on confirmations
-        if (filteredIntents.length === 0 && 
-            (!session.intents || session.intents.length === 0)) {
-          const isConfirmation = /^(yes|ok|okay|sure|yep|yeah|alright|confirm|confirmed|no|nope)$/i.test(message.trim());
-          if (!isConfirmation && message.trim().length > 2) {
-            filteredIntents.push('booking');
-            console.log('🔍 [INTENT DETECTION] No intents found, defaulting to booking');
-          } else {
-            console.log('🔍 [INTENT DETECTION] Message is confirmation, not defaulting to booking');
-          }
-        }
+        // DO NOT default to booking - return empty array if no intents detected
+        // This allows the system to ask clarifying questions instead
 
         console.log('✅ [INTENT DETECTION] Final intents:', filteredIntents);
         return filteredIntents;
@@ -426,11 +439,8 @@ JSON array:`;
       detectedIntents.push('booking');
     }
     
-    if (detectedIntents.length === 0 && 
-        (!session.intents || session.intents.length === 0) &&
-        !/^(yes|ok|okay|sure|yep|yeah|alright|confirm|confirmed)$/i.test(msg)) {
-      detectedIntents.push('booking');
-    }
+    // DO NOT default to booking - return empty array if no intents detected
+    // This allows the system to ask clarifying questions instead
     
     return detectedIntents;
   }
@@ -544,10 +554,13 @@ ${contextInfo.length > 0 ? `Current session context: ${contextInfo.join(', ')}` 
 Extract the following information from the user message:
 1. Patient name: Extract if mentioned (e.g., "I'm John", "my name is Jane Doe", "this is Mike")
 2. Treatment type: One of: ${treatmentTypes.join(', ')} or null if not mentioned
-   - Map symptoms to treatment: "toothache", "pain", "hurt", "ache", "sore" → "Consultation"
-   - "cleaning", "clean", "teeth cleaning" → "Cleaning"
-   - "filling", "fill", "cavity", "cavities" → "Filling"
-   - "braces", "braces maintenance", "orthodontic", "orthodontics" → "Braces Maintenance"
+   - IMPORTANT: Suggest treatment based on symptoms and descriptions:
+     * Symptoms like "toothache", "pain", "hurt", "ache", "sore", "discomfort", "sensitive", "swollen", "bleeding gums" → "Consultation"
+     * "cleaning", "clean", "teeth cleaning", "dental cleaning", "hygiene" → "Cleaning"
+     * "filling", "fill", "cavity", "cavities", "decay", "hole in tooth" → "Filling"
+     * "braces", "braces maintenance", "orthodontic", "orthodontics", "wire adjustment", "bracket" → "Braces Maintenance"
+   - If treatment is unclear from symptoms/description, default to "Consultation"
+   - Only return null if absolutely no treatment-related information is present
 3. Dentist name: One of the available dentists or null if not mentioned
    - Match variations: "GeneralA", "Dr GeneralA", "Dr. GeneralA", "General A" → "Dr GeneralA"
    - Match variations: "BracesA", "Dr BracesA", "Dr. BracesA", "Braces A" → "Dr BracesA"
@@ -945,7 +958,7 @@ IMPORTANT RULES:
 
     // 2. Treatment type → update session
     // Edge case: Only update if not already set (prevents overwriting user's previous choice)
-    // REQUIREMENT: If no treatment type specified, default to Consultation
+    // REQUIREMENT: Suggest treatment based on symptoms, default to Consultation if unclear
     if (validated.treatmentType && !session.treatmentType) {
       console.log('✅ [POST-PROCESS] Updating treatmentType:', validated.treatmentType);
       sessionManager.updateSession(conversationId, { treatmentType: validated.treatmentType });
@@ -961,8 +974,8 @@ IMPORTANT RULES:
         return aiResponse + '\n\nHow many teeth need filling?';
       }
     } else if (!session.treatmentType && !validated.treatmentType && validatedLatestIntents.includes('booking')) {
-      // REQUIREMENT: Default to Consultation if user wants to book but hasn't specified treatment
-      console.log('✅ [POST-PROCESS] No treatment specified, defaulting to Consultation');
+      // REQUIREMENT: Default to Consultation if treatment is unclear
+      console.log('✅ [POST-PROCESS] Treatment unclear, defaulting to Consultation');
       sessionManager.updateSession(conversationId, { treatmentType: 'Consultation' });
     }
 
@@ -992,6 +1005,36 @@ IMPORTANT RULES:
         // Note: If dentist not available for treatment, silently ignore (don't update session)
       }
     }
+    
+    // Ask for doctor preference only once if booking intent exists and dentist not set
+    // Only ask if we're not already checking availability (to avoid interrupting flow)
+    const currentSessionForDentist = sessionManager.getSession(conversationId);
+    const willCheckAvailability = validatedLatestIntents.includes('booking') && 
+                                   (currentSessionForDentist.treatmentType || validated.treatmentType) &&
+                                   !currentSessionForDentist.selectedSlot &&
+                                   (currentSessionForDentist.patientName || validated.patientName);
+    
+    if (validatedLatestIntents.includes('booking') && 
+        !currentSessionForDentist.dentistName && 
+        !validated.dentistName &&
+        !currentSessionForDentist.askedDoctorPreference &&
+        !willCheckAvailability) {
+      console.log('🔄 [POST-PROCESS] Asking doctor preference (first time)');
+      sessionManager.updateSession(conversationId, { askedDoctorPreference: true });
+      return aiResponse + '\n\nDo you have a preferred dentist? If not, I can select one based on availability.';
+    }
+    
+    // Ask for date/time preference only once if booking intent exists and date/time not set
+    // Only ask if we're not already checking availability (to avoid interrupting flow)
+    if (validatedLatestIntents.includes('booking') && 
+        !validated.dateTimeText &&
+        !currentSessionForDentist.askedDateTimePreference &&
+        !willCheckAvailability) {
+      console.log('🔄 [POST-PROCESS] Asking date/time preference (first time)');
+      sessionManager.updateSession(conversationId, { askedDateTimePreference: true });
+      return aiResponse + '\n\nWhat is your preferred date and time? If you don\'t have a preference, I can find the earliest available slot.';
+    }
+    
     // REQUIREMENT: Don't require dentist selection - auto-select based on earliest availability
     // Removed: Prompt user to choose dentist - we'll auto-select in checkAvailability
 
@@ -1001,7 +1044,7 @@ IMPORTANT RULES:
       sessionManager.updateSession(conversationId, { numberOfTeeth: validated.numberOfTeeth });
     }
 
-    // REQUIREMENT: Always check availability for bookings, even without date/time
+    // REQUIREMENT: If booking intent exists, check availability on EVERY user message
     // REQUIREMENT: Auto-select dentist with earliest availability
     // REQUIREMENT: Default to ASAP (earliest available) if no time preference
     // REQUIREMENT: Patient name is mandatory - prompt if missing
@@ -1009,26 +1052,12 @@ IMPORTANT RULES:
     // Get current session state (may have been updated above)
     const currentSession = sessionManager.getSession(conversationId);
     const hasTreatment = currentSession.treatmentType || validated.treatmentType;
-    const hasBookingIntent = validatedLatestIntents.includes('booking');
+    const hasBookingIntent = validatedLatestIntents.includes('booking') || (currentSession.intents && currentSession.intents.includes('booking'));
     const noSlotPending = !currentSession.selectedSlot;
     const hasPatientName = currentSession.patientName || validated.patientName;
     
-    // Check if CURRENT message is booking-related (not just session has old booking intent)
-    // This prevents checking availability on casual messages like "hi" when session still has booking intent
-    const msgLower = userMessage.toLowerCase().trim();
-    const isBookingRelatedMessage = 
-      validatedLatestIntents.includes('booking') || // Current message has booking intent
-      validated.dateTimeText || // User mentioned date/time
-      validated.patientName && hasBookingIntent || // User provided name AND session has booking intent
-      msgLower.includes('appointment') || 
-      msgLower.includes('book') || 
-      msgLower.includes('schedule') ||
-      msgLower.includes('available') ||
-      (msgLower.includes('time') && (msgLower.includes('when') || msgLower.includes('what')));
-    
     console.log('🔄 [POST-PROCESS] Booking check:', {
       hasBookingIntent,
-      isBookingRelatedMessage,
       hasTreatment,
       hasPatientName,
       noSlotPending,
@@ -1038,36 +1067,31 @@ IMPORTANT RULES:
     });
     
     // REQUIREMENT: Check for patient name before proceeding with booking
-    // Only check if this is actually a booking-related message OR if session has booking intent
-    if ((isBookingRelatedMessage || hasBookingIntent) && !hasPatientName && !validated.patientName) {
+    if (hasBookingIntent && !hasPatientName && !validated.patientName) {
       console.log('⚠️ [POST-PROCESS] Patient name is mandatory but missing, prompting user');
       return 'To book your appointment, I need your name. What is your name?';
     }
     
-    // Only check availability if:
-    // 1. (CURRENT message is booking-related OR user provided name/date when session has booking intent) AND
-    // 2. Treatment is set AND
-    // 3. No slot pending AND
-    // 4. Patient name exists
-    // This prevents checking availability on casual messages like "hi" but allows it when user provides name
-    const shouldCheckAvailability = (isBookingRelatedMessage || (hasBookingIntent && (validated.patientName || validated.dateTimeText))) && 
-                                    hasTreatment && 
-                                    noSlotPending && 
-                                    hasPatientName;
-    
-    if (shouldCheckAvailability) {
-      console.log('🔄 [POST-PROCESS] Booking-related message detected, checking availability');
+    // REQUIREMENT: If booking intent exists, check availability on EVERY user message
+    // This ensures availability data is always up-to-date
+    if (hasBookingIntent && hasTreatment && noSlotPending && hasPatientName) {
+      console.log('🔄 [POST-PROCESS] Booking intent detected, checking availability on every message');
       
-      // Ensure treatment is set in session
+      // Ensure treatment is set in session (default to Consultation if unclear)
       if (!currentSession.treatmentType) {
         const treatmentToUse = validated.treatmentType || 'Consultation';
         console.log('✅ [POST-PROCESS] Setting treatment in session:', treatmentToUse);
         sessionManager.updateSession(conversationId, { treatmentType: treatmentToUse });
       }
       
-      // Use date/time preference if provided, otherwise use 'anytime' for ASAP
-      const dateTimePreference = validated.dateTimeText || 'anytime';
+      // Use date/time preference if provided, otherwise use 'anytime' for ASAP (default)
+      const dateTimePreference = validated.dateTimeText || currentSession.dateTimePreference || 'anytime';
       console.log('🔄 [POST-PROCESS] Checking availability with preference:', dateTimePreference);
+      
+      // Store date/time preference in session if provided
+      if (validated.dateTimeText && !currentSession.dateTimePreference) {
+        sessionManager.updateSession(conversationId, { dateTimePreference: validated.dateTimeText });
+      }
       
       // Get fresh session after updates
       const updatedSession = sessionManager.getSession(conversationId);
@@ -1259,41 +1283,36 @@ IMPORTANT RULES:
       );
       console.log('📅 [AVAILABILITY] Calculated treatment duration:', treatmentDuration, 'minutes');
 
-      // CACHING STRATEGY: Check if we have fresh cached slots (< 2 minutes old)
-      const CACHE_TTL_MS = 2 * 60 * 1000; // 2 minutes
-      const now = Date.now();
-      const cacheAge = session.availableSlotsTimestamp ? (now - session.availableSlotsTimestamp) : Infinity;
-      const hasCachedSlots = session.availableSlots && Array.isArray(session.availableSlots) && session.availableSlots.length > 0;
-      const cacheIsFresh = cacheAge < CACHE_TTL_MS;
+      // REQUIREMENT: Always fetch fresh availability data (no caching)
+      // This ensures availability data is always up-to-date on every check
+      const availableDentists = getAvailableDentists(session.treatmentType);
+      console.log('📅 [AVAILABILITY] Available dentists for treatment:', availableDentists);
+      console.log('📅 [AVAILABILITY] Fetching fresh slots from API (no caching)...');
       
-      console.log('📅 [AVAILABILITY] Cache check:', {
-        hasCachedSlots,
-        cacheAge: cacheAge < Infinity ? `${Math.round(cacheAge / 1000)}s` : 'N/A',
-        cacheIsFresh,
-        cachedSlotsCount: session.availableSlots?.length || 0
-      });
+      const slots = await googleCalendarService.getAvailableSlots(session.treatmentType, availableDentists);
+      console.log('\n📊 [AVAILABILITY SUMMARY] Total slots found across all doctors:', slots.length);
       
-      let slots;
-      if (hasCachedSlots && cacheIsFresh) {
-        // Use cached slots - they're fresh enough
-        slots = session.availableSlots;
-        console.log('✅ [AVAILABILITY] Using cached slots (fresh, age:', Math.round(cacheAge / 1000), 'seconds)');
+      // Log first free slot overall
+      if (slots.length > 0) {
+        const firstFreeSlot = slots[0];
+        const slotDate = firstFreeSlot.startTime.toISOString().split('T')[0];
+        const slotTime = firstFreeSlot.startTime.toISOString().split('T')[1].substring(0, 5);
+        console.log(`🎯 [AVAILABILITY SUMMARY] The first free time slot overall is:`);
+        console.log(`   Doctor: ${firstFreeSlot.doctor}`);
+        console.log(`   Date: ${slotDate}`);
+        console.log(`   Time: ${slotTime}`);
+        console.log(`   Duration: ${firstFreeSlot.duration} minutes`);
       } else {
-        // Fetch fresh slots from API
-        const availableDentists = getAvailableDentists(session.treatmentType);
-        console.log('📅 [AVAILABILITY] Available dentists for treatment:', availableDentists);
-        console.log('📅 [AVAILABILITY] Fetching fresh slots from API...');
-        
-        slots = await googleCalendarService.getAvailableSlots(session.treatmentType, availableDentists);
-        console.log('📅 [AVAILABILITY] Total slots found:', slots.length);
-        
-        // Cache the slots with timestamp
-        sessionManager.updateSession(conversationId, { 
-          availableSlots: slots,
-          availableSlotsTimestamp: now
-        });
-        console.log('✅ [AVAILABILITY] Cached slots with timestamp:', new Date(now).toISOString());
+        console.log('❌ [AVAILABILITY SUMMARY] No available slots found for any doctor');
       }
+      
+      // Update session with fresh slots (for reference, but won't be used for caching)
+      const now = Date.now();
+      sessionManager.updateSession(conversationId, { 
+        availableSlots: slots,
+        availableSlotsTimestamp: now
+      });
+      console.log('✅ [AVAILABILITY] Updated session with fresh slots:', new Date(now).toISOString());
       
       if (slots.length > 0) {
         console.log('📅 [AVAILABILITY] First few slots:', slots.slice(0, 3).map(s => ({
