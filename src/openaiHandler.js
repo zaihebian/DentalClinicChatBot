@@ -31,6 +31,99 @@ const openai = new OpenAI({
 });
 
 /**
+ * Constants for intent types
+ */
+const INTENTS = {
+  BOOKING: 'booking',
+  CANCEL: 'cancel',
+  RESCHEDULE: 'reschedule',
+  PRICE_INQUIRY: 'price_inquiry'
+};
+
+const VALID_INTENTS = Object.values(INTENTS);
+
+/**
+ * Constants for treatment types
+ */
+const TREATMENT_TYPES = {
+  CONSULTATION: 'Consultation',
+  CLEANING: 'Cleaning',
+  FILLING: 'Filling',
+  BRACES_MAINTENANCE: 'Braces Maintenance'
+};
+
+const VALID_TREATMENT_TYPES = Object.values(TREATMENT_TYPES);
+
+/**
+ * Constants for dentist names
+ */
+const DENTISTS = {
+  BRACES_A: 'Dr BracesA',
+  BRACES_B: 'Dr BracesB',
+  GENERAL_A: 'Dr GeneralA',
+  GENERAL_B: 'Dr GeneralB'
+};
+
+const AVAILABLE_DENTISTS = Object.values(DENTISTS);
+
+/**
+ * Constants for dentist types
+ */
+const DENTIST_TYPES = {
+  BRACES: 'braces',
+  GENERAL: 'general'
+};
+
+/**
+ * Constants for action result types
+ */
+const ACTION_TYPES = {
+  BOOKING: 'booking',
+  CANCELLATION: 'cancellation'
+};
+
+/**
+ * Constants for confirmation keywords
+ */
+const CONFIRMATION_KEYWORDS = [
+  'yes', 'ok', 'okay', 'sure', 'confirm', 'confirmed', 
+  'yep', 'yeah', 'alright', 'sounds good', 'that works', 
+  'perfect', 'great'
+];
+
+/**
+ * Constants for decline keywords
+ */
+const DECLINE_KEYWORDS = [
+  'no', 'nope', 'cancel', 'change', 'different', 'not', 
+  "don't", 'decline'
+];
+
+/**
+ * Constants for validation limits
+ */
+const VALIDATION_LIMITS = {
+  PATIENT_NAME_MIN_LENGTH: 2,
+  PATIENT_NAME_MAX_LENGTH: 100,
+  MAX_TEETH_COUNT: 32,
+  DATE_TIME_TEXT_MIN_LENGTH: 3,
+  DATE_TIME_TEXT_MAX_LENGTH: 200
+};
+
+/**
+ * Constants for working hours
+ */
+const WORKING_HOURS = {
+  START: 9,  // 9 AM
+  END: 18    // 6 PM (18:00)
+};
+
+/**
+ * Constants for slot duration
+ */
+const SLOT_DURATION_MINUTES = 15;
+
+/**
  * OpenAIHandler class manages all AI conversation logic and business operations.
  * 
  * This is a singleton class that provides a centralized interface for:
@@ -115,19 +208,21 @@ class OpenAIHandler {
     // Add user message to history
     sessionManager.addMessage(conversationId, 'user', userMessage);
 
-    // Detect intents and update session
-    const detectedIntents = await this.detectIntents(userMessage, session);
+    // STEP 1: Combined intent detection and information extraction (single AI call)
+    console.log('🔍 [PRE-AI] Combined intent detection and information extraction...');
+    const combinedResult = await this.detectIntentsAndExtractInformation(userMessage, session);
+    const detectedIntents = combinedResult.intents;
+    const extracted = combinedResult.extracted;
     
     // Validate output format and content (defense in depth)
     // Ensures AI response is valid array of strings matching allowed intents
-    const validIntents = ['booking', 'cancel', 'reschedule', 'price_inquiry'];
     const validatedIntents = Array.isArray(detectedIntents)
       ? detectedIntents.filter(intent => 
-          typeof intent === 'string' && validIntents.includes(intent)
+          typeof intent === 'string' && VALID_INTENTS.includes(intent)
         )
       : [];
     
-    // Handle intent detection: set intent if detected, ask clarifying question only when NO intent detected
+    // Handle intent detection: update session with detected intents
     const hadPreviousIntent = session.intents && session.intents.length > 0;
     const hasNewIntent = validatedIntents.length > 0;
     
@@ -143,15 +238,9 @@ class OpenAIHandler {
     } else if (isConfirmingClarification) {
       // User confirmed the clarifying question - set booking intent
       console.log('🔍 [INTENT DETECTION] User confirmed clarifying question, setting booking intent');
-      sessionManager.updateSession(conversationId, { intents: ['booking'] });
-    } else if (!hadPreviousIntent && !hasNewIntent) {
-      // No intent detected and no previous intent - ask clarifying question
-      console.log('🔍 [INTENT DETECTION] No intent detected, asking clarifying question');
-      const clarifyingResponse = 'Would you like to book an appointment?';
-      sessionManager.addMessage(conversationId, 'assistant', clarifyingResponse);
-      await googleSheetsService.logConversationTurn(conversationId, phoneNumber, 'assistant', clarifyingResponse, session);
-      return clarifyingResponse;
+      sessionManager.updateSession(conversationId, { intents: [INTENTS.BOOKING] });
     }
+    // Note: If no intent detected, we still proceed to AI generation - AI will handle greetings and ask clarifying questions
     
     // Get latest intents from session (may have been updated above)
     const updatedSession = sessionManager.getSession(conversationId);
@@ -160,13 +249,314 @@ class OpenAIHandler {
       : (validatedIntents.length > 0 ? validatedIntents : []);
     // Note: latestIntents contains only the latest intents (either new ones or kept from previous)
 
-    // Build system prompt with context
-    const systemPrompt = this.buildSystemPrompt(session);
+    // STEP 2: Validate and update session with extracted information
+    console.log('📝 [PRE-AI] Validating and updating session with extracted information...');
     
-    // Build conversation history for OpenAI
+    // Validate extracted information format (defense in depth) - comprehensive validation
+    
+    const validated = {
+      patientName: null,
+      treatmentType: null,
+      dentistName: null,
+      numberOfTeeth: null,
+      dateTimeText: null,
+    };
+    
+    // Validate patient name: string, trimmed, reasonable length (2-100 chars), alphanumeric with spaces/hyphens/apostrophes only
+    if (typeof extracted.patientName === 'string') {
+      const cleaned = extracted.patientName.trim();
+      if (cleaned.length >= VALIDATION_LIMITS.PATIENT_NAME_MIN_LENGTH && 
+          cleaned.length <= VALIDATION_LIMITS.PATIENT_NAME_MAX_LENGTH && 
+          /^[a-zA-Z\s'-]+$/.test(cleaned)) {
+        validated.patientName = cleaned;
+        console.log('✅ [PRE-AI] Validated patientName:', validated.patientName);
+      } else {
+        console.log('❌ [PRE-AI] Invalid patientName format:', cleaned);
+      }
+    }
+    
+    // Validate treatment type: must be exact match from allowed list
+    if (typeof extracted.treatmentType === 'string' && VALID_TREATMENT_TYPES.includes(extracted.treatmentType)) {
+      validated.treatmentType = extracted.treatmentType;
+      console.log('✅ [PRE-AI] Validated treatmentType:', validated.treatmentType);
+    } else if (extracted.treatmentType) {
+      console.log('❌ [PRE-AI] Invalid treatmentType:', extracted.treatmentType);
+    }
+    
+    // Validate dentist name: must be exact match from available dentists
+    if (typeof extracted.dentistName === 'string' && AVAILABLE_DENTISTS.includes(extracted.dentistName)) {
+      validated.dentistName = extracted.dentistName;
+      console.log('✅ [PRE-AI] Validated dentistName:', validated.dentistName);
+    } else if (extracted.dentistName) {
+      console.log('❌ [PRE-AI] Invalid dentistName:', extracted.dentistName);
+    }
+    
+    // Validate number of teeth: integer, 1-32 range (human teeth count)
+    if (typeof extracted.numberOfTeeth === 'number' && 
+        Number.isInteger(extracted.numberOfTeeth) && 
+        extracted.numberOfTeeth > 0 && 
+        extracted.numberOfTeeth <= VALIDATION_LIMITS.MAX_TEETH_COUNT) {
+      validated.numberOfTeeth = extracted.numberOfTeeth;
+      console.log('✅ [PRE-AI] Validated numberOfTeeth:', validated.numberOfTeeth);
+    } else if (extracted.numberOfTeeth !== null && extracted.numberOfTeeth !== undefined) {
+      console.log('❌ [PRE-AI] Invalid numberOfTeeth:', extracted.numberOfTeeth);
+    }
+    
+    // Validate date/time text: string, reasonable length (3-200 chars)
+    if (typeof extracted.dateTimeText === 'string') {
+      const cleaned = extracted.dateTimeText.trim();
+      if (cleaned.length >= VALIDATION_LIMITS.DATE_TIME_TEXT_MIN_LENGTH && 
+          cleaned.length <= VALIDATION_LIMITS.DATE_TIME_TEXT_MAX_LENGTH) {
+        validated.dateTimeText = cleaned;
+        console.log('✅ [PRE-AI] Validated dateTimeText:', validated.dateTimeText);
+      } else {
+        console.log('❌ [PRE-AI] Invalid dateTimeText length:', cleaned.length);
+      }
+    }
+
+    // Update session with validated information
+    const sessionUpdates = {};
+    if (validated.patientName && !updatedSession.patientName) {
+      sessionUpdates.patientName = validated.patientName;
+      console.log('✅ [PRE-AI] Updating patientName:', validated.patientName);
+    }
+    if (validated.treatmentType && !updatedSession.treatmentType) {
+      sessionUpdates.treatmentType = validated.treatmentType;
+      console.log('✅ [PRE-AI] Updating treatmentType:', validated.treatmentType);
+    }
+    if (validated.dentistName && !updatedSession.dentistName) {
+      // Validate dentist is available for treatment type
+      const currentTreatment = updatedSession.treatmentType || validated.treatmentType;
+      if (currentTreatment) {
+        const availableDentistsForTreatment = getAvailableDentists(currentTreatment);
+        if (availableDentistsForTreatment.includes(validated.dentistName)) {
+          sessionUpdates.dentistName = validated.dentistName;
+          sessionUpdates.dentistType = currentTreatment === TREATMENT_TYPES.BRACES_MAINTENANCE ? DENTIST_TYPES.BRACES : DENTIST_TYPES.GENERAL;
+          console.log('✅ [PRE-AI] Updating dentistName:', validated.dentistName);
+        }
+      }
+    }
+    if (validated.numberOfTeeth && updatedSession.treatmentType === TREATMENT_TYPES.FILLING && !updatedSession.numberOfTeeth) {
+      sessionUpdates.numberOfTeeth = validated.numberOfTeeth;
+      console.log('✅ [PRE-AI] Updating numberOfTeeth:', validated.numberOfTeeth);
+    }
+    if (validated.dateTimeText && !updatedSession.dateTimePreference) {
+      sessionUpdates.dateTimePreference = validated.dateTimeText;
+      console.log('✅ [PRE-AI] Updating dateTimePreference:', validated.dateTimeText);
+    }
+    
+    if (Object.keys(sessionUpdates).length > 0) {
+      sessionManager.updateSession(conversationId, sessionUpdates);
+    }
+
+    // Default treatment to Consultation if booking intent but no treatment specified
+    const currentSessionAfterExtraction = sessionManager.getSession(conversationId);
+    if (!currentSessionAfterExtraction.treatmentType && latestIntents.includes(INTENTS.BOOKING)) {
+      sessionManager.updateSession(conversationId, { treatmentType: TREATMENT_TYPES.CONSULTATION });
+      console.log('✅ [PRE-AI] Defaulting to Consultation for booking');
+    }
+
+    // STEP 3: Handle critical actions before AI (book/cancel)
+    let actionResult = null; // { type: 'booking'|'cancellation', success: boolean, message: string, details: object }
+    
+    const freshSession = sessionManager.getSession(conversationId);
+    
+    // Check for confirmation (slot pending + user confirms)
+    if (freshSession.selectedSlot && freshSession.confirmationStatus === 'pending') {
+      const isConfirmation = CONFIRMATION_KEYWORDS.some(keyword => {
+        const regex = new RegExp(`\\b${keyword}\\b`, 'i');
+        return regex.test(userMessage);
+      });
+      
+      if (isConfirmation) {
+        console.log('✅ [PRE-AI] User confirmed slot, proceeding to booking...');
+        // Check patient name before booking
+        if (!freshSession.patientName) {
+          actionResult = {
+            type: ACTION_TYPES.BOOKING,
+            success: false,
+            message: 'Patient name is required before booking',
+            requiresPatientName: true
+          };
+        } else {
+          // Attempt booking
+          try {
+            const bookingMessage = await this.confirmBooking(conversationId, freshSession);
+            // Check if booking succeeded by checking session for eventId
+            const sessionAfterBooking = sessionManager.getSession(conversationId);
+            if (sessionAfterBooking.eventId) {
+              // Booking succeeded
+              actionResult = {
+                type: ACTION_TYPES.BOOKING,
+                success: true,
+                message: 'Appointment booked successfully',
+                details: {
+                  doctor: freshSession.dentistName,
+                  treatment: freshSession.treatmentType,
+                  date: freshSession.selectedSlot.startTime.toLocaleDateString(),
+                  time: freshSession.selectedSlot.startTime.toLocaleTimeString()
+                }
+              };
+            } else {
+              // Booking failed - check if it's because slot was no longer available
+              // (confirmBooking might have cleared the slot and returned alternative message)
+              if (!sessionAfterBooking.selectedSlot && freshSession.selectedSlot) {
+                actionResult = {
+                  type: ACTION_TYPES.BOOKING,
+                  success: false,
+                  message: 'The selected time slot is no longer available',
+                  slotUnavailable: true
+                };
+              } else {
+                // Other failure - use message from confirmBooking if available
+                actionResult = {
+                  type: ACTION_TYPES.BOOKING,
+                  success: false,
+                  message: bookingMessage || 'Booking failed',
+                  details: {}
+                };
+              }
+            }
+          } catch (error) {
+            console.error('❌ [PRE-AI] Booking error:', error);
+            actionResult = {
+              type: ACTION_TYPES.BOOKING,
+              success: false,
+              message: error.message || 'Booking failed due to technical error',
+              details: {}
+            };
+          }
+        }
+        } else {
+          // User declined or unclear response
+          const isDecline = DECLINE_KEYWORDS.some(keyword => {
+            const regex = new RegExp(`\\b${keyword}\\b`, 'i');
+            return regex.test(userMessage);
+          });
+        
+        if (isDecline) {
+          console.log('❌ [PRE-AI] User declined slot');
+          sessionManager.updateSession(conversationId, { 
+            selectedSlot: null,
+            confirmationStatus: null 
+          });
+          actionResult = {
+            type: ACTION_TYPES.BOOKING,
+            success: false,
+            message: 'User declined the appointment slot',
+            declined: true
+          };
+        }
+      }
+    }
+    
+    // Check for cancellation confirmation (user says "yes" when existingBooking exists)
+    if (!actionResult && freshSession.existingBooking) {
+      const isConfirmation = CONFIRMATION_KEYWORDS.some(keyword => {
+        const regex = new RegExp(`\\b${keyword}\\b`, 'i');
+        return regex.test(userMessage);
+      });
+      
+      if (isConfirmation) {
+        console.log('✅ [PRE-AI] User confirmed cancellation, processing...');
+        try {
+          const cancellationMessage = await this.handleCancellation(conversationId, freshSession, userMessage);
+          const sessionAfterCancellation = sessionManager.getSession(conversationId);
+          
+          if (sessionAfterCancellation.existingBooking === null) {
+            // Cancellation succeeded
+            actionResult = {
+              type: ACTION_TYPES.CANCELLATION,
+              success: true,
+              message: 'Cancellation processed successfully',
+              details: {}
+            };
+          } else {
+            // Cancellation failed
+            actionResult = {
+              type: ACTION_TYPES.CANCELLATION,
+              success: false,
+              message: cancellationMessage || 'Cancellation failed',
+              details: {}
+            };
+          }
+        } catch (error) {
+          console.error('❌ [PRE-AI] Cancellation error:', error);
+          actionResult = {
+            type: ACTION_TYPES.CANCELLATION,
+            success: false,
+            message: error.message || 'Cancellation failed',
+            details: {}
+          };
+        }
+      }
+    }
+    
+    // Check for cancellation intent
+    if (!actionResult && latestIntents.includes(INTENTS.CANCEL)) {
+      console.log('🔄 [PRE-AI] Cancellation intent detected, processing cancellation...');
+      try {
+        const cancellationMessage = await this.handleCancellation(conversationId, freshSession, userMessage);
+        const sessionAfterCancellation = sessionManager.getSession(conversationId);
+        
+        // Determine cancellation result based on session state
+        if (sessionAfterCancellation.existingBooking === null && freshSession.existingBooking) {
+          // Booking was cleared - cancellation succeeded
+          actionResult = {
+            type: ACTION_TYPES.CANCELLATION,
+            success: true,
+            message: 'Cancellation processed successfully',
+            details: {}
+          };
+        } else if (!sessionAfterCancellation.existingBooking && !freshSession.existingBooking) {
+          // No booking found
+          actionResult = {
+            type: ACTION_TYPES.CANCELLATION,
+            success: false,
+            message: 'No appointment found to cancel',
+            noBookingFound: true
+          };
+        } else if (sessionAfterCancellation.existingBooking && !freshSession.existingBooking) {
+          // Booking was just found - waiting for confirmation
+          actionResult = {
+            type: ACTION_TYPES.CANCELLATION,
+            success: false,
+            message: 'Found appointment, waiting for confirmation',
+            requiresConfirmation: true,
+            details: {
+              doctor: sessionAfterCancellation.existingBooking.doctor,
+              date: sessionAfterCancellation.existingBooking.startTime.toLocaleDateString(),
+              time: sessionAfterCancellation.existingBooking.startTime.toLocaleTimeString()
+            }
+          };
+        } else {
+          // Still waiting for confirmation or other state
+          actionResult = {
+            type: ACTION_TYPES.CANCELLATION,
+            success: false,
+            message: cancellationMessage || 'Processing cancellation',
+            details: {}
+          };
+        }
+      } catch (error) {
+        console.error('❌ [PRE-AI] Cancellation error:', error);
+        actionResult = {
+          type: ACTION_TYPES.CANCELLATION,
+          success: false,
+          message: error.message || 'Cancellation failed',
+          details: {}
+        };
+      }
+    }
+
+    // Build system prompt with context and action results
+    const finalSessionForPrompt = sessionManager.getSession(conversationId);
+    const systemPrompt = this.buildSystemPrompt(finalSessionForPrompt, actionResult);
+    
+    // Build conversation history for OpenAI (use finalSessionForPrompt to include latest state)
     const messages = [
       { role: 'system', content: systemPrompt },
-      ...session.conversationHistory.map(msg => ({
+      ...finalSessionForPrompt.conversationHistory.map(msg => ({
         role: msg.role,
         content: msg.content,
       })),
@@ -218,6 +608,177 @@ class OpenAIHandler {
     } catch (error) {
       console.error('Error generating OpenAI response:', error);
       return 'I apologize, I am experiencing technical difficulties. Please try again later or contact our receptionist.';
+    }
+  }
+
+  /**
+   * Combined method: Detects intents and extracts information in a single AI call.
+   * This reduces API calls from 2 to 1, improving performance while maintaining the same logic.
+   * 
+   * @param {string} message - User's message text
+   * @param {Object} session - Current session object
+   * @returns {Promise<Object>} Object with intents array and extracted information
+   * @returns {string[]} returns.intents - Array of detected intents
+   * @returns {Object} returns.extracted - Extracted information object
+   * @private
+   */
+  async detectIntentsAndExtractInformation(message, session) {
+    try {
+      // Build context for AI
+      const existingIntents = session.intents && session.intents.length > 0 
+        ? `Current intents in conversation: ${session.intents.join(', ')}. ` 
+        : '';
+      
+      const conversationContext = session.conversationHistory && session.conversationHistory.length > 0
+        ? `Recent conversation context: ${session.conversationHistory.slice(-3).map(m => `${m.role}: ${m.content}`).join('; ')}. `
+        : '';
+
+      
+      const contextInfo = [];
+      if (session.treatmentType) {
+        contextInfo.push(`Current treatment: ${session.treatmentType}`);
+      }
+      if (session.dentistName) {
+        contextInfo.push(`Current dentist: ${session.dentistName}`);
+      }
+      if (session.patientName) {
+        contextInfo.push(`Patient name: ${session.patientName}`);
+      }
+
+      const combinedPrompt = `You are an intent detection and information extraction system for a dental appointment chatbot. Analyze the user's message and perform TWO tasks:
+
+TASK 1: Detect intent(s)
+Available intents:
+- "booking": User wants to book/make/schedule a new appointment
+- "cancel": User wants to cancel an existing appointment
+- "reschedule": User wants to change/move/reschedule an existing appointment to a different time
+- "price_inquiry": User is asking about prices, costs, fees, or charges
+
+Intent detection rules:
+1. Detect ALL relevant intents in the message (can be multiple)
+2. Ignore negations (e.g., "I don't want to cancel" = no cancel intent)
+3. Ignore confirmations or simple responses like "yes", "ok", "sure" unless they contain new intent
+4. If message is just confirming something (yes/no), return empty array
+5. Consider conversation context - if user is already in a booking flow and says "yes", don't add new booking intent
+6. DO NOT default to "booking" - if no intents detected, return empty array
+
+TASK 2: Extract structured information
+Available treatment types: ${VALID_TREATMENT_TYPES.join(', ')}
+Available dentists: ${AVAILABLE_DENTISTS.join(', ')}
+
+${contextInfo.length > 0 ? `Current session context: ${contextInfo.join(', ')}` : ''}
+
+Extract the following information:
+1. Patient name: Extract if mentioned (e.g., "I'm John", "my name is Jane Doe", "this is Mike")
+2. Treatment type: One of: ${VALID_TREATMENT_TYPES.join(', ')} or null if not mentioned
+   - IMPORTANT: Suggest treatment based on symptoms:
+     * Symptoms like "toothache", "pain", "hurt", "ache", "sore", "discomfort", "sensitive", "swollen", "bleeding gums" → "Consultation"
+     * "cleaning", "clean", "teeth cleaning", "dental cleaning", "hygiene" → "Cleaning"
+     * "filling", "fill", "cavity", "cavities", "decay", "hole in tooth" → "Filling"
+     * "braces", "braces maintenance", "orthodontic", "orthodontics", "wire adjustment", "bracket" → "Braces Maintenance"
+   - If treatment is unclear from symptoms/description, default to "Consultation"
+   - Only return null if absolutely no treatment-related information is present
+3. Dentist name: One of the available dentists or null if not mentioned
+   - Match variations: "GeneralA", "Dr GeneralA", "Dr. GeneralA", "General A" → "Dr GeneralA"
+   - Same pattern for all dentists
+4. Number of teeth: Integer 1-32 if mentioned (only relevant for fillings), null otherwise
+5. Date/time text: Extract any date/time preferences as raw text (e.g., "tomorrow at 10am", "next Tuesday 1pm") or null
+
+${existingIntents}${conversationContext}
+User message: "${message}"
+
+Return ONLY a valid JSON object with these exact keys:
+{
+  "intents": ["booking"] or ["price_inquiry", "booking"] or [] etc.,
+  "patientName": string or null,
+  "treatmentType": string or null,
+  "dentistName": string or null,
+  "numberOfTeeth": number or null,
+  "dateTimeText": string or null
+}
+
+JSON object:`;
+
+      const completion = await openai.chat.completions.create({
+        model: config.openai.model,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a precise intent detection and information extraction system. Always return ONLY a valid JSON object, no explanations, no markdown, just the JSON. Example: {"intents": ["booking"], "patientName": "John Doe", "treatmentType": "Cleaning", "dentistName": null, "numberOfTeeth": null, "dateTimeText": "tomorrow at 10am"}'
+          },
+          {
+            role: 'user',
+            content: combinedPrompt
+          }
+        ],
+        temperature: 0.1, // Low temperature for consistent, accurate detection
+        max_tokens: 250, // Slightly more tokens for combined response
+      });
+
+      const response = completion.choices[0]?.message?.content?.trim();
+      
+      console.log('🔍 [COMBINED AI] AI Response:', response);
+      
+      if (!response) {
+        console.log('⚠️ [COMBINED AI] No AI response, using fallbacks');
+        return {
+          intents: this.fallbackIntentDetection(message, session),
+          extracted: { patientName: null, treatmentType: null, dentistName: null, numberOfTeeth: null, dateTimeText: null }
+        };
+      }
+
+      // Parse JSON response
+      try {
+        const jsonMatch = response.match(/\{[\s\S]*\}/);
+        if (!jsonMatch) {
+          throw new Error('No JSON object found in response');
+        }
+        
+        const parsed = JSON.parse(jsonMatch[0]);
+        
+        // Extract intents
+        let intents = [];
+        if (Array.isArray(parsed.intents)) {
+          intents = parsed.intents;
+        } else if (parsed.intent) {
+          intents = [parsed.intent];
+        }
+        
+        // Validate intents
+        const filteredIntents = intents
+          .filter(intent => typeof intent === 'string' && VALID_INTENTS.includes(intent))
+          .filter((intent, index, self) => self.indexOf(intent) === index); // Remove duplicates
+        
+        console.log('🔍 [COMBINED AI] Parsed intents:', filteredIntents);
+        
+        // Extract information
+        const extracted = {
+          patientName: parsed.patientName || null,
+          treatmentType: parsed.treatmentType || null,
+          dentistName: parsed.dentistName || null,
+          numberOfTeeth: parsed.numberOfTeeth || null,
+          dateTimeText: parsed.dateTimeText || null,
+        };
+        
+        console.log('📝 [COMBINED AI] Parsed extracted:', extracted);
+        
+        return {
+          intents: filteredIntents,
+          extracted: extracted
+        };
+      } catch (parseError) {
+        console.warn('Failed to parse AI combined response, using fallbacks:', parseError);
+        return {
+          intents: this.fallbackIntentDetection(message, session),
+          extracted: { patientName: null, treatmentType: null, dentistName: null, numberOfTeeth: null, dateTimeText: null }
+        };
+      }
+    } catch (error) {
+      console.error('Error in combined AI call, using fallbacks:', error);
+      return {
+        intents: this.fallbackIntentDetection(message, session),
+        extracted: { patientName: null, treatmentType: null, dentistName: null, numberOfTeeth: null, dateTimeText: null }
+      };
     }
   }
 
@@ -361,9 +922,8 @@ JSON array:`;
 
         // Validate intents format and content (defense in depth)
         // Filters out invalid types, non-string values, and duplicates
-        const validIntents = ['booking', 'cancel', 'reschedule', 'price_inquiry'];
         const filteredIntents = intents
-          .filter(intent => typeof intent === 'string' && validIntents.includes(intent))
+          .filter(intent => typeof intent === 'string' && VALID_INTENTS.includes(intent))
           .filter((intent, index, self) => self.indexOf(intent) === index); // Remove duplicates
         
         console.log('🔍 [INTENT DETECTION] Filtered intents:', filteredIntents);
@@ -423,20 +983,20 @@ JSON array:`;
     // Simple keyword matching as fallback
     if ((msg.includes('cancel') || msg.includes('cancellation')) && 
         !msg.includes("don't") && !msg.includes('not')) {
-      detectedIntents.push('cancel');
+      detectedIntents.push(INTENTS.CANCEL);
     }
     if ((msg.includes('reschedule') || msg.includes('change appointment') || msg.includes('move appointment')) &&
         !msg.includes("don't") && !msg.includes('not')) {
-      detectedIntents.push('reschedule');
+      detectedIntents.push(INTENTS.RESCHEDULE);
     }
     if ((msg.includes('price') || msg.includes('cost') || msg.includes('how much')) &&
         !msg.includes("don't") && !msg.includes('not')) {
-      detectedIntents.push('price_inquiry');
+      detectedIntents.push(INTENTS.PRICE_INQUIRY);
     }
     if ((msg.includes('book') || msg.includes('appointment') || msg.includes('schedule')) &&
         !msg.includes("don't") && !msg.includes('not') &&
         msg.length > 3 && !/^(yes|ok|okay|sure)$/i.test(msg)) {
-      detectedIntents.push('booking');
+      detectedIntents.push(INTENTS.BOOKING);
     }
     
     // DO NOT default to booking - return empty array if no intents detected
@@ -526,12 +1086,6 @@ JSON array:`;
    */
   async extractInformation(message, session) {
     try {
-      const availableDentists = [
-        'Dr BracesA', 'Dr BracesB',
-        'Dr GeneralA', 'Dr GeneralB'
-      ];
-      
-      const treatmentTypes = ['Consultation', 'Cleaning', 'Filling', 'Braces Maintenance'];
       
       const contextInfo = [];
       if (session.treatmentType) {
@@ -546,14 +1100,14 @@ JSON array:`;
 
       const extractionPrompt = `You are an information extraction system for a dental appointment chatbot. Extract structured information from the user's message.
 
-Available treatment types: ${treatmentTypes.join(', ')}
-Available dentists: ${availableDentists.join(', ')}
+Available treatment types: ${VALID_TREATMENT_TYPES.join(', ')}
+Available dentists: ${AVAILABLE_DENTISTS.join(', ')}
 
 ${contextInfo.length > 0 ? `Current session context: ${contextInfo.join(', ')}` : ''}
 
 Extract the following information from the user message:
 1. Patient name: Extract if mentioned (e.g., "I'm John", "my name is Jane Doe", "this is Mike")
-2. Treatment type: One of: ${treatmentTypes.join(', ')} or null if not mentioned
+2. Treatment type: One of: ${VALID_TREATMENT_TYPES.join(', ')} or null if not mentioned
    - IMPORTANT: Suggest treatment based on symptoms and descriptions:
      * Symptoms like "toothache", "pain", "hurt", "ache", "sore", "discomfort", "sensitive", "swollen", "bleeding gums" → "Consultation"
      * "cleaning", "clean", "teeth cleaning", "dental cleaning", "hygiene" → "Cleaning"
@@ -650,7 +1204,7 @@ JSON object:`;
 
           // Validate treatment type: must be exact match from allowed list
           // Prevents invalid treatment types that could break business logic
-          if (typeof extracted.treatmentType === 'string' && treatmentTypes.includes(extracted.treatmentType)) {
+          if (typeof extracted.treatmentType === 'string' && VALID_TREATMENT_TYPES.includes(extracted.treatmentType)) {
             validated.treatmentType = extracted.treatmentType;
             console.log('✅ [INFO EXTRACTION] Validated treatmentType:', validated.treatmentType);
           } else if (extracted.treatmentType) {
@@ -659,7 +1213,7 @@ JSON object:`;
 
           // Validate dentist name: must be exact match from available dentists
           // Prevents invalid dentist names that don't exist in calendar config
-          if (typeof extracted.dentistName === 'string' && availableDentists.includes(extracted.dentistName)) {
+          if (typeof extracted.dentistName === 'string' && AVAILABLE_DENTISTS.includes(extracted.dentistName)) {
             validated.dentistName = extracted.dentistName;
             console.log('✅ [INFO EXTRACTION] Validated dentistName:', validated.dentistName);
           } else if (extracted.dentistName) {
@@ -751,11 +1305,14 @@ JSON object:`;
    * })
    * // Output: Prompt includes treatment and intent, but no dentist/patient
    */
-  buildSystemPrompt(session) {
+  buildSystemPrompt(session, actionResult = null) {
     let prompt = `You are a polite and professional AI receptionist for a dental clinic. Your role is to help patients book appointments, answer questions about treatments and pricing, and manage cancellations.
 
 Guidelines:
 - Always be polite, professional, and empathetic
+- When users greet you (e.g., "hi", "hello", "hey"), acknowledge the greeting warmly first, then ask how you can help
+- If no clear intent is detected from the user's message, politely ask clarifying questions to understand their needs
+- Example for greetings: "Hello! How can I help you today? Would you like to book an appointment?"
 - Ask clarifying questions when needed
 - Confirm details before taking actions
 - Keep responses concise and clear
@@ -767,6 +1324,41 @@ Guidelines:
 
 Current conversation context:
 `;
+
+    // Include action results if any action was taken before AI call
+    if (actionResult) {
+      if (actionResult.type === ACTION_TYPES.BOOKING && actionResult.success) {
+        prompt += `- ACTION RESULT: An appointment was just successfully booked.\n`;
+        prompt += `  Details: Doctor ${actionResult.details.doctor}, ${actionResult.details.treatment}, ${actionResult.details.date} at ${actionResult.details.time}\n`;
+        prompt += `  Your response should confirm the booking naturally and provide the details.\n`;
+      } else if (actionResult.type === ACTION_TYPES.BOOKING && actionResult.requiresPatientName) {
+        prompt += `- ACTION RESULT: Booking was attempted but patient name is required.\n`;
+        prompt += `  Your response should politely ask for the patient's name.\n`;
+      } else if (actionResult.type === ACTION_TYPES.BOOKING && actionResult.declined) {
+        prompt += `- ACTION RESULT: User declined the appointment slot.\n`;
+        prompt += `  Your response should acknowledge this and ask if they'd like to choose a different time.\n`;
+      } else if (actionResult.type === ACTION_TYPES.BOOKING && actionResult.slotUnavailable) {
+        prompt += `- ACTION RESULT: The selected time slot is no longer available.\n`;
+        prompt += `  Your response should apologize and let them know you'll find alternative times.\n`;
+      } else if (actionResult.type === ACTION_TYPES.BOOKING && !actionResult.success) {
+        prompt += `- ACTION RESULT: Booking attempt failed: ${actionResult.message}\n`;
+        prompt += `  Your response should apologize and explain the issue naturally.\n`;
+      } else if (actionResult.type === ACTION_TYPES.CANCELLATION && actionResult.success) {
+        prompt += `- ACTION RESULT: Appointment cancellation was processed successfully.\n`;
+        prompt += `  Your response should confirm the cancellation naturally and politely.\n`;
+      } else if (actionResult.type === ACTION_TYPES.CANCELLATION && actionResult.noBookingFound) {
+        prompt += `- ACTION RESULT: No appointment was found to cancel.\n`;
+        prompt += `  Your response should inform the user that no appointment was found and offer to help them.\n`;
+      } else if (actionResult.type === ACTION_TYPES.CANCELLATION && actionResult.requiresConfirmation) {
+        prompt += `- ACTION RESULT: Found an appointment for cancellation.\n`;
+        prompt += `  Details: Doctor ${actionResult.details.doctor}, ${actionResult.details.date} at ${actionResult.details.time}\n`;
+        prompt += `  Your response should present these details and ask the user to confirm cancellation.\n`;
+      } else if (actionResult.type === ACTION_TYPES.CANCELLATION && !actionResult.success) {
+        prompt += `- ACTION RESULT: Cancellation attempt failed: ${actionResult.message}\n`;
+        prompt += `  Your response should apologize and explain the issue naturally.\n`;
+      }
+      prompt += `\n`;
+    }
 
     if (session.patientName) {
       prompt += `- Patient name: ${session.patientName}\n`;
@@ -780,11 +1372,12 @@ Current conversation context:
     if (session.dentistName) {
       prompt += `- Dentist: ${session.dentistName}\n`;
     }
-    if (session.selectedSlot) {
+    if (session.selectedSlot && !actionResult) {
+      // Only show pending slot if no action was taken (action would have cleared it)
       prompt += `- Selected slot (pending confirmation): ${session.selectedSlot.startTime.toLocaleString()}\n`;
       prompt += `- IMPORTANT: This slot is PENDING confirmation. Ask user to confirm, do NOT claim it's already scheduled.\n`;
     }
-    if (session.confirmationStatus === 'pending') {
+    if (session.confirmationStatus === 'pending' && !actionResult) {
       prompt += `- Status: Waiting for user confirmation of the selected slot\n`;
     }
 
@@ -814,88 +1407,24 @@ IMPORTANT RULES:
   }
 
   /**
-   * Post-processes AI response and handles business logic based on user message and session state.
-   * This is the core business logic orchestrator. Extracts information, validates data,
-   * updates session, triggers availability checks, handles confirmations, cancellations, and price inquiries.
+   * Post-processes AI response - simplified to only handle availability checks.
+   * Information extraction and critical actions (booking/cancellation) are handled before AI call.
    * 
    * Processing flow:
-   * 1. Validates latestIntents format (defense in depth)
-   * 2. Extracts information using AI (patient name, treatment, dentist, teeth, date/time)
-   * 3. Validates extracted information (format, type, allowed values)
-   * 4. Routes validated information to appropriate flows:
-   *    - Patient name → update session
-   *    - Treatment type → update session, ask for teeth if filling
-   *    - Dentist name → validate availability for treatment, update session
-   *    - Number of teeth → update session (for fillings)
-   *    - Date/time → parse and check availability
-   * 5. Handles confirmations (if slot pending)
-   * 6. Handles cancellations (if cancel intent)
-   * 7. Handles price inquiries (if price_inquiry intent)
+   * 1. Validates latestIntents format
+   * 2. If booking intent + ready → check availability
+   * 3. Handle price inquiry (if price_inquiry intent)
+   * 4. Return AI response (or availability result)
    * 
    * @param {string} conversationId - Unique conversation identifier
    * @param {string} userMessage - User's message text
    * @param {string} aiResponse - Initial AI-generated response
    * @param {Object} session - Current session object
-   * @param {string[]} latestIntents - Latest intents from current message (validated, duplicates removed)
+   * @param {string[]} latestIntents - Latest intents from current message
    * @returns {Promise<string>} Final processed response message
-   * 
-   * @example
-   * // Treatment detection (filling without teeth count):
-   * await postProcessResponse("+1234567890", "I need a filling", "I can help you with that.", { treatmentType: null }, [])
-   * // Output: "I can help you with that.\n\nHow many teeth need filling?"
-   * 
-   * @example
-   * // Complete booking flow (all info provided):
-   * await postProcessResponse("+1234567890", "Tomorrow at 10am", "Great!", {
-   *   treatmentType: "Cleaning",
-   *   dentistName: "Dr GeneralA",
-   *   selectedSlot: null
-   * }, ["booking"])
-   * // Output: "I found an available slot:\n\nDoctor: Dr GeneralA\nDate: 1/16/2024\nTime: 10:00 AM - 10:30 AM\nDuration: 30 minutes\n\nWould you like to confirm this appointment?"
-   * 
-   * @example
-   * // Confirmation (slot pending):
-   * await postProcessResponse("+1234567890", "Yes", "Would you like to confirm?", {
-   *   selectedSlot: { startTime: new Date("2024-01-16T10:00:00Z") },
-   *   confirmationStatus: "pending",
-   *   treatmentType: "Cleaning",
-   *   dentistName: "Dr GeneralA"
-   * }, ["booking"])
-   * // Output: "✅ Appointment confirmed!\n\nDoctor: Dr GeneralA\nTreatment: Cleaning\n..."
-   * 
-   * @example
-   * // Partial information (date/time but missing treatment/dentist):
-   * await postProcessResponse("+1234567890", "I'm John and I need cleaning tomorrow", "I can help you.", {
-   *   treatmentType: null,
-   *   dentistName: null
-   * }, ["booking"])
-   * // Extracts: patientName="John", treatmentType="Cleaning", dateTimeText="tomorrow"
-   * // Updates session with treatment, asks for dentist
-   * // Output: "Which dentist would you like? Available options: ..."
-   * 
-   * @example
-   * // Cancellation intent:
-   * await postProcessResponse("+1234567890", "I want to cancel", "I can help with that.", {
-   *   phone: "+1234567890",
-   *   existingBooking: null
-   * }, ["cancel"])
-   * // Output: "I found your appointment:\n\nDoctor: ...\n\nWould you like to confirm cancellation?"
-   * 
-   * @example
-   * // Price inquiry intent:
-   * await postProcessResponse("+1234567890", "How much does cleaning cost?", "Here's our pricing:", {}, ["price_inquiry"])
-   * // Output: "Here's our pricing:\n\n[Pricing information from Google Docs]"
-   * 
-   * @example
-   * // Invalid extracted data (filtered out):
-   * // If AI extracts invalid dentist name or out-of-range teeth count:
-   * // Validation filters it out, only valid data updates session
    */
   async postProcessResponse(conversationId, userMessage, aiResponse, session, latestIntents = []) {
-    const msg = userMessage.toLowerCase();
-
-    console.log('\n🔄 [POST-PROCESS] Starting post-processing');
-    console.log('🔄 [POST-PROCESS] User message:', userMessage);
+    console.log('\n🔄 [POST-PROCESS] Starting minimal post-processing');
     console.log('🔄 [POST-PROCESS] Latest intents:', latestIntents);
     console.log('🔄 [POST-PROCESS] Current session state:', {
       treatmentType: session.treatmentType,
@@ -909,300 +1438,50 @@ IMPORTANT RULES:
     const validIntents = ['booking', 'cancel', 'reschedule', 'price_inquiry'];
     const validatedLatestIntents = Array.isArray(latestIntents)
       ? latestIntents
-          .filter(intent => typeof intent === 'string' && validIntents.includes(intent))
+          .filter(intent => typeof intent === 'string' && VALID_INTENTS.includes(intent))
           .filter((intent, index, self) => self.indexOf(intent) === index) // Remove duplicates
       : [];
 
     console.log('🔄 [POST-PROCESS] Validated intents:', validatedLatestIntents);
 
-    // Extract all information using AI (much more robust than regex)
-    const extracted = await this.extractInformation(userMessage, session);
-
-    // Validate extracted information format (defense in depth)
-    const availableDentists = [
-      'Dr BracesA', 'Dr BracesB',
-      'Dr GeneralA', 'Dr GeneralB'
-    ];
-    const treatmentTypes = ['Consultation', 'Cleaning', 'Filling', 'Braces Maintenance'];
-    
-    // Validate and sanitize extracted data before use
-    const validated = {
-      patientName: (typeof extracted.patientName === 'string' && extracted.patientName.trim().length >= 2 && extracted.patientName.trim().length <= 100) 
-        ? extracted.patientName.trim() 
-        : null,
-      treatmentType: (typeof extracted.treatmentType === 'string' && treatmentTypes.includes(extracted.treatmentType))
-        ? extracted.treatmentType
-        : null,
-      dentistName: (typeof extracted.dentistName === 'string' && availableDentists.includes(extracted.dentistName))
-        ? extracted.dentistName
-        : null,
-      numberOfTeeth: (typeof extracted.numberOfTeeth === 'number' && 
-                      Number.isInteger(extracted.numberOfTeeth) && 
-                      extracted.numberOfTeeth > 0 && 
-                      extracted.numberOfTeeth <= 32)
-        ? extracted.numberOfTeeth
-        : null,
-      dateTimeText: (typeof extracted.dateTimeText === 'string' && extracted.dateTimeText.trim().length >= 3 && extracted.dateTimeText.trim().length <= 200)
-        ? extracted.dateTimeText.trim()
-        : null,
-    };
-
-    // Route validated information to appropriate flows
-    console.log('🔄 [POST-PROCESS] Routing validated information...');
-    
-    // 1. Patient name → update session
-    if (validated.patientName && !session.patientName) {
-      console.log('✅ [POST-PROCESS] Updating patientName:', validated.patientName);
-      sessionManager.updateSession(conversationId, { patientName: validated.patientName });
-    }
-
-    // 2. Treatment type → update session
-    // Edge case: Only update if not already set (prevents overwriting user's previous choice)
-    // REQUIREMENT: Suggest treatment based on symptoms, default to Consultation if unclear
-    if (validated.treatmentType && !session.treatmentType) {
-      console.log('✅ [POST-PROCESS] Updating treatmentType:', validated.treatmentType);
-      sessionManager.updateSession(conversationId, { treatmentType: validated.treatmentType });
-      
-      // Special handling for fillings: require number of teeth
-      // If filling and number of teeth already extracted, update session
-      if (validated.treatmentType === 'Filling' && validated.numberOfTeeth) {
-        console.log('✅ [POST-PROCESS] Updating numberOfTeeth for filling:', validated.numberOfTeeth);
-        sessionManager.updateSession(conversationId, { numberOfTeeth: validated.numberOfTeeth });
-      } else if (validated.treatmentType === 'Filling' && !session.numberOfTeeth) {
-        // Ask about number of teeth if not provided (required for duration calculation)
-        console.log('⚠️ [POST-PROCESS] Filling requires numberOfTeeth, asking user');
-        return aiResponse + '\n\nHow many teeth need filling?';
-      }
-    } else if (!session.treatmentType && !validated.treatmentType && validatedLatestIntents.includes('booking')) {
-      // REQUIREMENT: Default to Consultation if treatment is unclear
-      console.log('✅ [POST-PROCESS] Treatment unclear, defaulting to Consultation');
-      sessionManager.updateSession(conversationId, { treatmentType: 'Consultation' });
-    }
-
-    // 3. Dentist selection → update session (with validation)
-    // Edge case: Validate dentist is available for current treatment type
-    // Braces dentists can't do general treatments and vice versa
-    if (validated.dentistName && !session.dentistName) {
-      // Check dentist availability for current treatment (use session or newly extracted)
-      const currentTreatment = session.treatmentType || validated.treatmentType;
-      if (currentTreatment) {
-        const availableDentistsForTreatment = getAvailableDentists(currentTreatment);
-        console.log('🔄 [POST-PROCESS] Checking dentist availability:', {
-          dentist: validated.dentistName,
-          treatment: currentTreatment,
-          availableDentists: availableDentistsForTreatment
-        });
-        // Only update if dentist is valid for this treatment type
-        if (availableDentistsForTreatment.includes(validated.dentistName)) {
-          console.log('✅ [POST-PROCESS] Dentist valid, updating session');
-          sessionManager.updateSession(conversationId, { 
-            dentistName: validated.dentistName,
-            dentistType: currentTreatment === 'Braces Maintenance' ? 'braces' : 'general',
-          });
-        } else {
-          console.log('❌ [POST-PROCESS] Dentist not available for treatment type');
-        }
-        // Note: If dentist not available for treatment, silently ignore (don't update session)
-      }
-    }
-    
-    // Ask for doctor preference only once if booking intent exists and dentist not set
-    // Only ask if we're not already checking availability (to avoid interrupting flow)
-    const currentSessionForDentist = sessionManager.getSession(conversationId);
-    const willCheckAvailability = validatedLatestIntents.includes('booking') && 
-                                   (currentSessionForDentist.treatmentType || validated.treatmentType) &&
-                                   !currentSessionForDentist.selectedSlot &&
-                                   (currentSessionForDentist.patientName || validated.patientName);
-    
-    if (validatedLatestIntents.includes('booking') && 
-        !currentSessionForDentist.dentistName && 
-        !validated.dentistName &&
-        !currentSessionForDentist.askedDoctorPreference &&
-        !willCheckAvailability) {
-      console.log('🔄 [POST-PROCESS] Asking doctor preference (first time)');
-      sessionManager.updateSession(conversationId, { askedDoctorPreference: true });
-      return aiResponse + '\n\nDo you have a preferred dentist? If not, I can select one based on availability.';
-    }
-    
-    // Ask for date/time preference only once if booking intent exists and date/time not set
-    // Only ask if we're not already checking availability (to avoid interrupting flow)
-    if (validatedLatestIntents.includes('booking') && 
-        !validated.dateTimeText &&
-        !currentSessionForDentist.askedDateTimePreference &&
-        !willCheckAvailability) {
-      console.log('🔄 [POST-PROCESS] Asking date/time preference (first time)');
-      sessionManager.updateSession(conversationId, { askedDateTimePreference: true });
-      return aiResponse + '\n\nWhat is your preferred date and time? If you don\'t have a preference, I can find the earliest available slot.';
-    }
-    
-    // REQUIREMENT: Don't require dentist selection - auto-select based on earliest availability
-    // Removed: Prompt user to choose dentist - we'll auto-select in checkAvailability
-
-    // 4. Number of teeth (for fillings) → update session
-    if (validated.numberOfTeeth && session.treatmentType === 'Filling' && !session.numberOfTeeth) {
-      console.log('✅ [POST-PROCESS] Updating numberOfTeeth:', validated.numberOfTeeth);
-      sessionManager.updateSession(conversationId, { numberOfTeeth: validated.numberOfTeeth });
-    }
-
-    // REQUIREMENT: If booking intent exists, check availability on EVERY user message
-    // REQUIREMENT: Auto-select dentist with earliest availability
-    // REQUIREMENT: Default to ASAP (earliest available) if no time preference
-    // REQUIREMENT: Patient name is mandatory - prompt if missing
-    
-    // Get current session state (may have been updated above)
-    const currentSession = sessionManager.getSession(conversationId);
-    const hasTreatment = currentSession.treatmentType || validated.treatmentType;
-    const hasBookingIntent = validatedLatestIntents.includes('booking') || (currentSession.intents && currentSession.intents.includes('booking'));
-    const noSlotPending = !currentSession.selectedSlot;
-    const hasPatientName = currentSession.patientName || validated.patientName;
-    
-    console.log('🔄 [POST-PROCESS] Booking check:', {
-      hasBookingIntent,
-      hasTreatment,
-      hasPatientName,
-      noSlotPending,
-      extractedPatientName: !!validated.patientName,
-      extractedDateTime: !!validated.dateTimeText,
-      message: userMessage.substring(0, 50)
-    });
-    
-    // REQUIREMENT: Check for patient name before proceeding with booking
-    if (hasBookingIntent && !hasPatientName && !validated.patientName) {
-      console.log('⚠️ [POST-PROCESS] Patient name is mandatory but missing, prompting user');
-      return 'To book your appointment, I need your name. What is your name?';
-    }
-    
-    // REQUIREMENT: If booking intent exists, check availability on EVERY user message
-    // This ensures availability data is always up-to-date
-    if (hasBookingIntent && hasTreatment && noSlotPending && hasPatientName) {
-      console.log('🔄 [POST-PROCESS] Booking intent detected, checking availability on every message');
-      
-      // Ensure treatment is set in session (default to Consultation if unclear)
-      if (!currentSession.treatmentType) {
-        const treatmentToUse = validated.treatmentType || 'Consultation';
-        console.log('✅ [POST-PROCESS] Setting treatment in session:', treatmentToUse);
-        sessionManager.updateSession(conversationId, { treatmentType: treatmentToUse });
-      }
-      
-      // Use date/time preference if provided, otherwise use 'anytime' for ASAP (default)
-      const dateTimePreference = validated.dateTimeText || currentSession.dateTimePreference || 'anytime';
-      console.log('🔄 [POST-PROCESS] Checking availability with preference:', dateTimePreference);
-      
-      // Store date/time preference in session if provided
-      if (validated.dateTimeText && !currentSession.dateTimePreference) {
-        sessionManager.updateSession(conversationId, { dateTimePreference: validated.dateTimeText });
-      }
-      
-      // Get fresh session after updates
-      const updatedSession = sessionManager.getSession(conversationId);
-      return await this.checkAvailability(conversationId, updatedSession, dateTimePreference);
-    }
-
-    // Handle confirmation - More robust detection
-    console.log('🔄 [POST-PROCESS] Checking confirmation conditions...');
-    console.log('🔄 [POST-PROCESS] Session state:', {
-      hasSelectedSlot: !!session.selectedSlot,
-      confirmationStatus: session.confirmationStatus,
-      selectedSlotDetails: session.selectedSlot ? {
-        startTime: session.selectedSlot.startTime?.toISOString(),
-        doctor: session.selectedSlot.doctor
-      } : null
-    });
-    
-    // Check for confirmation keywords (case-insensitive, whole word or standalone)
-    const confirmationKeywords = ['yes', 'ok', 'okay', 'sure', 'confirm', 'confirmed', 'yep', 'yeah', 'alright', 'sounds good', 'that works', 'perfect', 'great'];
-    const declineKeywords = ['no', 'nope', 'cancel', 'change', 'different', 'not', "don't", 'decline'];
-    
-    const isConfirmation = confirmationKeywords.some(keyword => {
-      const regex = new RegExp(`\\b${keyword}\\b`, 'i');
-      return regex.test(userMessage);
-    });
-    const isDecline = declineKeywords.some(keyword => {
-      const regex = new RegExp(`\\b${keyword}\\b`, 'i');
-      return regex.test(userMessage);
-    });
-    
-    console.log('🔄 [POST-PROCESS] Confirmation detection:', {
-      isConfirmation,
-      isDecline,
-      message: userMessage
-    });
-    
-    if (session.selectedSlot && session.confirmationStatus === 'pending') {
-      if (isConfirmation) {
-        // REQUIREMENT: Patient name is mandatory before confirming booking
-        const currentSessionForBooking = sessionManager.getSession(conversationId);
-        if (!currentSessionForBooking.patientName && !validated.patientName) {
-          console.log('⚠️ [POST-PROCESS] Patient name missing before confirmation, prompting');
-          return 'Before I confirm your appointment, I need your name. What is your name?';
-        }
-        
-        // Update patient name if extracted in this message
-        if (validated.patientName && !currentSessionForBooking.patientName) {
-          console.log('✅ [POST-PROCESS] Updating patientName before booking:', validated.patientName);
-          sessionManager.updateSession(conversationId, { patientName: validated.patientName });
-        }
-        
-        console.log('✅ [POST-PROCESS] User confirmed, proceeding to booking');
-        const finalSession = sessionManager.getSession(conversationId);
-        return await this.confirmBooking(conversationId, finalSession);
-      } else if (isDecline) {
-        console.log('❌ [POST-PROCESS] User declined, clearing selectedSlot');
-        sessionManager.updateSession(conversationId, { 
-          selectedSlot: null,
-          confirmationStatus: null 
-        });
-        return 'No problem. Would you like to choose a different time?';
-      }
-    } else if (isConfirmation && latestIntents.includes('booking') && !session.selectedSlot) {
-      // Fallback: User confirmed but no slot selected - need to check availability first
-      console.log('⚠️ [POST-PROCESS] User confirmed but no slot selected, checking availability...');
-      
-      // REQUIREMENT: Patient name is mandatory
-      if (!session.patientName && !validated.patientName) {
-        console.log('⚠️ [POST-PROCESS] Patient name missing, prompting');
-        return 'Before I can book your appointment, I need your name. What is your name?';
-      }
-      
-      // REQUIREMENT: Default to Consultation if treatment not specified
-      const treatmentToUse = session.treatmentType || 'Consultation';
-      if (!session.treatmentType) {
-        sessionManager.updateSession(conversationId, { treatmentType: 'Consultation' });
-      }
-      
-      // Update patient name if extracted
-      if (validated.patientName && !session.patientName) {
-        sessionManager.updateSession(conversationId, { patientName: validated.patientName });
-      }
-      
-      const updatedSession = sessionManager.getSession(conversationId);
-      // REQUIREMENT: Auto-select dentist, don't require user to specify
-      return await this.checkAvailability(conversationId, updatedSession, 'anytime');
-    }
-
-    // Handle cancellation (only if cancel intent exists in validated latest intents)
-    if (validatedLatestIntents.includes('cancel')) {
-      return await this.handleCancellation(conversationId, session, userMessage);
-    }
-
-    // Handle price inquiry (only if price_inquiry intent exists in validated latest intents)
+    // Handle price inquiry (only if price_inquiry intent exists)
     if (validatedLatestIntents.includes('price_inquiry')) {
+      console.log('💰 [POST-PROCESS] Price inquiry detected, fetching pricing info');
       const pricing = await googleDocsService.getPricingInfo();
       return aiResponse + '\n\n' + pricing.substring(0, 1000); // Limit response length
     }
 
-    // Final check: If AI claimed scheduling but no booking happened, warn and don't claim it
-    const finalSessionCheck = sessionManager.getSession(conversationId);
-    const aiClaimedScheduled = /(scheduled|booked|confirmed|appointment is set|I have scheduled)/i.test(aiResponse);
-    const actuallyScheduled = !!finalSessionCheck.eventId;
+    // Only check availability if booking intent exists and ready
+    const currentSession = sessionManager.getSession(conversationId);
+    const hasBookingIntent = validatedLatestIntents.includes(INTENTS.BOOKING) || (currentSession.intents && currentSession.intents.includes(INTENTS.BOOKING));
+    const hasTreatment = currentSession.treatmentType;
+    const noSlotPending = !currentSession.selectedSlot;
+    const hasPatientName = currentSession.patientName;
     
-    if (aiClaimedScheduled && !actuallyScheduled && !finalSessionCheck.selectedSlot) {
-      console.log('⚠️ [POST-PROCESS] AI falsely claimed scheduling - removing claim from response');
-      // Don't let AI claim scheduling if no slot is selected
-      aiResponse = aiResponse.replace(/(I have scheduled|scheduled|booked|confirmed|appointment is set)/gi, 'I can help you schedule');
+    console.log('🔄 [POST-PROCESS] Availability check conditions:', {
+      hasBookingIntent,
+      hasTreatment,
+      hasPatientName,
+      noSlotPending
+    });
+    
+    // Check availability only if booking intent + ready (no slot pending)
+    if (hasBookingIntent && hasTreatment && noSlotPending && hasPatientName) {
+      console.log('🔄 [POST-PROCESS] Booking intent detected, checking availability');
+      
+      // Use date/time preference from session or default to 'anytime'
+      const dateTimePreference = currentSession.dateTimePreference || 'anytime';
+      console.log('🔄 [POST-PROCESS] Checking availability with preference:', dateTimePreference);
+      
+      // Get fresh session and check availability
+      const updatedSession = sessionManager.getSession(conversationId);
+      return await this.checkAvailability(conversationId, updatedSession, dateTimePreference);
     }
 
-    console.log('✅ [POST-PROCESS] Final response ready');
+    // If patient name missing but booking intent exists, let AI handle it (already in system prompt)
+    // If treatment missing but booking intent exists, let AI handle it (already defaulted to Consultation)
+    
+    console.log('✅ [POST-PROCESS] Returning AI response as-is');
     return aiResponse;
   }
 
@@ -1420,7 +1699,7 @@ IMPORTANT RULES:
       // REQUIREMENT: Update session with auto-selected dentist if not already set
       if (dentistToUse && !session.dentistName) {
         console.log('✅ [AVAILABILITY] Auto-selecting dentist:', dentistToUse);
-        const dentistType = session.treatmentType === 'Braces Maintenance' ? 'braces' : 'general';
+        const dentistType = session.treatmentType === TREATMENT_TYPES.BRACES_MAINTENANCE ? DENTIST_TYPES.BRACES : DENTIST_TYPES.GENERAL;
         sessionManager.updateSession(conversationId, { 
           dentistName: dentistToUse,
           dentistType: dentistType
@@ -1694,7 +1973,7 @@ IMPORTANT RULES:
           conversationId,
           phone: session.phone,
           patientName: session.patientName,
-          intent: 'booking',
+          intent: INTENTS.BOOKING,
           dentist: session.dentistName,
           treatment: session.treatmentType,
           dateTime: `${session.selectedSlot.startTime.toISOString()} - ${session.selectedSlot.endTime.toISOString()}`,
@@ -1714,7 +1993,7 @@ IMPORTANT RULES:
           conversationId,
           phone: session.phone,
           patientName: session.patientName,
-          intent: 'booking',
+          intent: INTENTS.BOOKING,
           dentist: session.dentistName,
           treatment: session.treatmentType,
           status: 'NEEDS FOLLOW-UP***************',
@@ -1858,7 +2137,7 @@ IMPORTANT RULES:
             conversationId,
             phone: session.phone,
             patientName: booking.patientName,
-            intent: 'cancel',
+            intent: INTENTS.CANCEL,
             dentist: booking.doctor,
             dateTime: `${booking.startTime.toISOString()} - ${booking.endTime.toISOString()}`,
             eventId: booking.calendarEventId,

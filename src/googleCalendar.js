@@ -180,7 +180,7 @@ class GoogleCalendarService {
         });
 
         const busySlots = this.parseBusySlots(events.data.items);
-        const availableSlots = this.findAvailableSlots(busySlots, now, oneMonthLater, doctor);
+        const availableSlots = this.findAvailableSlots(busySlots, now, oneMonthLater, doctor, now);
         
         // Log first free time slot for this doctor
         if (availableSlots.length > 0) {
@@ -243,48 +243,45 @@ class GoogleCalendarService {
    * Finds available time slots between busy periods for a specific doctor.
    * Assumes working hours are 9:00-18:00, Monday-Friday.
    * Identifies gaps between existing appointments and returns slots with minimum 15-minute duration.
+   * For today, starts from the current time instead of 9 AM to avoid offering past time slots.
    * 
    * @param {Array} busySlots - Array of busy slot objects with start and end times
    * @param {Date} startDate - Start date for searching available slots
    * @param {Date} endDate - End date for searching available slots
    * @param {string} doctor - Doctor name to associate with the slots
-   * @returns {Array} Array of available slot objects
+   * @param {Date} currentTime - Current time (used to filter out past slots for today)
+   * @returns {Array} Array of available slot objects (all slots start at or after currentTime)
    * 
    * @example
-   * // Input:
+   * // Input (if today is 2024-01-15 at 2 PM):
    * findAvailableSlots(
    *   [
    *     { start: Date(2024-01-15T10:00:00Z), end: Date(2024-01-15T11:00:00Z) }
    *   ],
    *   Date(2024-01-15),
    *   Date(2024-01-16),
-   *   "Dr GeneralA"
+   *   "Dr GeneralA",
+   *   Date(2024-01-15T14:00:00Z) // Current time: 2 PM
    * )
    * 
-   * // Output:
+   * // Output (starts from 2 PM, not 9 AM):
    * [
    *   {
    *     doctor: "Dr GeneralA",
-   *     startTime: Date(2024-01-15T09:00:00Z),
-   *     endTime: Date(2024-01-15T10:00:00Z),
-   *     duration: 60,
-   *     weekday: "Monday"
-   *   },
-   *   {
-   *     doctor: "Dr GeneralA",
-   *     startTime: Date(2024-01-15T11:00:00Z),
+   *     startTime: Date(2024-01-15T14:00:00Z), // Current time, not 9 AM
    *     endTime: Date(2024-01-15T18:00:00Z),
-   *     duration: 420,
+   *     duration: 240,
    *     weekday: "Monday"
    *   }
    * ]
    */
-  findAvailableSlots(busySlots, startDate, endDate, doctor) {
+  findAvailableSlots(busySlots, startDate, endDate, doctor, currentTime) {
     const availableSlots = [];
     const workingHours = { start: 9, end: 18 }; // 9 AM to 6 PM
     const slotDuration = 15; // Minimum slot duration in minutes
 
     let currentDate = new Date(startDate);
+    const now = new Date(currentTime);
     
     while (currentDate < endDate) {
       // Skip weekends
@@ -307,31 +304,33 @@ class GoogleCalendarService {
       );
 
       // Find gaps between busy slots
-      let currentTime = new Date(dayStart);
+      // If this is today, start from current time instead of 9 AM
+      const isToday = dayStart.toDateString() === now.toDateString();
+      let slotStartTime = isToday ? new Date(Math.max(dayStart, now)) : new Date(dayStart);
       
       for (const busySlot of dayBusySlots.sort((a, b) => a.start - b.start)) {
-        if (currentTime < busySlot.start) {
-          const gapDuration = (busySlot.start - currentTime) / (1000 * 60); // minutes
+        if (slotStartTime < busySlot.start) {
+          const gapDuration = (busySlot.start - slotStartTime) / (1000 * 60); // minutes
           if (gapDuration >= slotDuration) {
             availableSlots.push({
               doctor,
-              startTime: new Date(currentTime),
+              startTime: new Date(slotStartTime),
               endTime: new Date(busySlot.start),
               duration: gapDuration,
               weekday: this.getWeekdayName(dayOfWeek),
             });
           }
         }
-        currentTime = new Date(Math.max(currentTime, busySlot.end));
+        slotStartTime = new Date(Math.max(slotStartTime, busySlot.end));
       }
 
       // Check gap from last busy slot to end of day
-      if (currentTime < dayEnd) {
-        const gapDuration = (dayEnd - currentTime) / (1000 * 60);
+      if (slotStartTime < dayEnd) {
+        const gapDuration = (dayEnd - slotStartTime) / (1000 * 60);
         if (gapDuration >= slotDuration) {
           availableSlots.push({
             doctor,
-            startTime: new Date(currentTime),
+            startTime: new Date(slotStartTime),
             endTime: new Date(dayEnd),
             duration: gapDuration,
             weekday: this.getWeekdayName(dayOfWeek),
@@ -344,7 +343,14 @@ class GoogleCalendarService {
       currentDate.setHours(workingHours.start, 0, 0, 0);
     }
 
-    return availableSlots;
+    // Final safety filter: Remove any slots that start before current time
+    // This ensures we never return past time slots, even if there's a logic error
+    const filteredSlots = availableSlots.filter(slot => {
+      const slotStart = new Date(slot.startTime);
+      return slotStart >= now;
+    });
+
+    return filteredSlots;
   }
 
   /**
