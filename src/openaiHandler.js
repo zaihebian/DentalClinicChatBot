@@ -200,6 +200,22 @@ class OpenAIHandler {
       eventId: session.eventId
     });
     
+    // Check for test commands to clear session (for testing purposes)
+    const testCommands = ['end session', 'clear session', 'reset session', 'new session'];
+    const normalizedMessage = userMessage.toLowerCase().trim();
+    const isTestCommand = testCommands.some(cmd => normalizedMessage === cmd);
+    
+    if (isTestCommand) {
+      console.log('🧪 [TEST COMMAND] Clearing session:', normalizedMessage);
+      sessionManager.endSession(conversationId);
+      // Create fresh session for next message
+      const newSession = sessionManager.getSession(conversationId);
+      sessionManager.updateSession(conversationId, { phone: phoneNumber });
+      sessionManager.addMessage(conversationId, 'user', userMessage);
+      sessionManager.addMessage(conversationId, 'assistant', '✅ Session cleared. Starting fresh conversation. How can I help you today?');
+      return '✅ Session cleared. Starting fresh conversation. How can I help you today?';
+    }
+    
     // Update phone if not set
     if (!session.phone) {
       sessionManager.updateSession(conversationId, { phone: phoneNumber });
@@ -1453,9 +1469,12 @@ IMPORTANT RULES:
 
     // Only check availability if booking intent exists and ready
     const currentSession = sessionManager.getSession(conversationId);
-    const hasBookingIntent = validatedLatestIntents.includes(INTENTS.BOOKING) || (currentSession.intents && currentSession.intents.includes(INTENTS.BOOKING));
+    const hasBookingIntent = validatedLatestIntents.includes(INTENTS.BOOKING) || 
+                             validatedLatestIntents.includes(INTENTS.RESCHEDULE) || 
+                             (currentSession.intents && currentSession.intents.includes(INTENTS.BOOKING)) ||
+                             (currentSession.intents && currentSession.intents.includes(INTENTS.RESCHEDULE));
     const hasTreatment = currentSession.treatmentType;
-    const noSlotPending = !currentSession.selectedSlot;
+    const noSlotPending = !currentSession.selectedSlot || validatedLatestIntents.includes(INTENTS.RESCHEDULE);
     const hasPatientName = currentSession.patientName;
     
     console.log('🔄 [POST-PROCESS] Availability check conditions:', {
@@ -1936,6 +1955,29 @@ IMPORTANT RULES:
 
       console.log('✅ [BOOKING] Slot validated, proceeding to create calendar event');
 
+      // If rescheduling, delete old event first
+      const currentSession = sessionManager.getSession(conversationId);
+      if (session.eventId && (session.intents?.includes(INTENTS.RESCHEDULE) || currentSession.intents?.includes(INTENTS.RESCHEDULE))) {
+        console.log('🔄 [BOOKING] Reschedule detected, deleting old event:', session.eventId);
+        try {
+          const oldCalendarId = config.calendar.dentistCalendars[session.dentistName];
+          if (oldCalendarId) {
+            const cancelResult = await googleCalendarService.cancelAppointment(oldCalendarId, session.eventId);
+            if (cancelResult.success) {
+              console.log('✅ [BOOKING] Old event deleted successfully');
+              // Clear old eventId from session
+              sessionManager.updateSession(conversationId, { eventId: null });
+            } else {
+              console.log('⚠️ [BOOKING] Failed to delete old event:', cancelResult.error);
+              // Continue anyway - we'll create new event and old one might need manual cleanup
+            }
+          }
+        } catch (error) {
+          console.error('⚠️ [BOOKING] Error deleting old event during reschedule:', error);
+          // Continue anyway - we'll create new event and old one might need manual cleanup
+        }
+      }
+
       const appointmentData = {
         patientName: session.patientName || 'Patient',
         doctor: session.dentistName,
@@ -1968,18 +2010,23 @@ IMPORTANT RULES:
 
         console.log('✅ [BOOKING] Session updated with confirmation');
 
+        // Determine intent for logging (reschedule vs booking)
+        const isReschedule = session.intents?.includes(INTENTS.RESCHEDULE) || currentSession.intents?.includes(INTENTS.RESCHEDULE);
+        const logIntent = isReschedule ? INTENTS.RESCHEDULE : INTENTS.BOOKING;
+        const logAction = isReschedule ? 'appointment_rescheduled' : 'booking_created';
+
         // Log action
         await googleSheetsService.logAction({
           conversationId,
           phone: session.phone,
           patientName: session.patientName,
-          intent: INTENTS.BOOKING,
+          intent: logIntent,
           dentist: session.dentistName,
           treatment: session.treatmentType,
           dateTime: `${session.selectedSlot.startTime.toISOString()} - ${session.selectedSlot.endTime.toISOString()}`,
           eventId: result.eventId,
           status: 'confirmed',
-          action: 'booking_created',
+          action: logAction,
         });
 
         console.log('✅ [BOOKING] Booking logged to Google Sheets');
@@ -1988,16 +2035,21 @@ IMPORTANT RULES:
         return `✅ Appointment confirmed!\n\nDoctor: ${session.dentistName}\nTreatment: ${session.treatmentType}\nDate: ${session.selectedSlot.startTime.toLocaleDateString()}\nTime: ${session.selectedSlot.startTime.toLocaleTimeString()} - ${session.selectedSlot.endTime.toLocaleTimeString()}\n\nWe look forward to seeing you!`;
       } else {
         console.log('❌ [BOOKING] Calendar event creation failed:', result.error);
+        // Determine intent for logging (reschedule vs booking)
+        const isReschedule = session.intents?.includes(INTENTS.RESCHEDULE) || currentSession.intents?.includes(INTENTS.RESCHEDULE);
+        const logIntent = isReschedule ? INTENTS.RESCHEDULE : INTENTS.BOOKING;
+        const logAction = isReschedule ? 'reschedule_failed' : 'booking_failed';
+        
         // Log failure
         await googleSheetsService.logAction({
           conversationId,
           phone: session.phone,
           patientName: session.patientName,
-          intent: INTENTS.BOOKING,
+          intent: logIntent,
           dentist: session.dentistName,
           treatment: session.treatmentType,
           status: 'NEEDS FOLLOW-UP***************',
-          action: 'booking_failed',
+          action: logAction,
         });
 
         return 'I apologize, there was an error creating your appointment. Our receptionist will contact you shortly. Please call us if you need immediate assistance.';
