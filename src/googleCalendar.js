@@ -594,9 +594,115 @@ class GoogleCalendarService {
   }
 
   /**
-   * Retrieves all existing AI-booked appointments for the next 2 months.
-   * Fetches events from all dentist calendars and parses appointment information
-   * from event titles that match the "##AI Booked##" format.
+   * Extracts phone number from text using pattern matching.
+   * Supports multiple formats: +1234567890, 1234567890, (123) 456-7890, etc.
+   * 
+   * @param {string} text - Text to search for phone number
+   * @returns {string|null} Phone number if found, null otherwise
+   * @private
+   */
+  extractPhoneNumber(text) {
+    if (!text) return null;
+    
+    // Pattern 1: +1234567890 or +1 234 567 8900 (with country code)
+    const pattern1 = /\+?\d{1,3}[\s-]?\d{3,4}[\s-]?\d{3,4}[\s-]?\d{3,4}/g;
+    // Pattern 2: (123) 456-7890 or (123)456-7890
+    const pattern2 = /\(?\d{3}\)?[\s-]?\d{3}[\s-]?\d{4}/g;
+    // Pattern 3: Simple 10+ digit number
+    const pattern3 = /\d{10,}/g;
+    
+    // Try patterns in order of specificity
+    let match = text.match(pattern1) || text.match(pattern2) || text.match(pattern3);
+    if (match && match[0]) {
+      // Normalize: remove spaces, dashes, parentheses, keep + if present
+      const normalized = match[0].replace(/[\s\-\(\)]/g, '');
+      return normalized.length >= 10 ? normalized : null;
+    }
+    
+    return null;
+  }
+
+  /**
+   * Parses appointment information from calendar event.
+   * Handles both AI-booked format and general event formats.
+   * 
+   * @param {Object} event - Google Calendar event object
+   * @param {string} calendarId - Calendar ID
+   * @param {string} defaultDoctor - Default doctor name for this calendar
+   * @returns {Object|null} Booking object if phone found, null otherwise
+   * @private
+   */
+  parseEventToBooking(event, calendarId, defaultDoctor) {
+    const title = event.summary || '';
+    const description = event.description || '';
+    const combinedText = `${title} ${description}`;
+    
+    // Try AI-booked format first (structured, reliable)
+    if (title.includes('##AI Booked##')) {
+      const match = title.match(/##AI Booked##\s+(.+?)\s+(.+?)\s+(.+?)\s+(.+)/);
+      if (match) {
+        const [, doctorName, patientName, treatment, phone] = match;
+        return {
+          patientPhone: phone.trim(),
+          patientName: patientName.trim(),
+          doctor: doctorName.trim(),
+          treatment: treatment.trim(),
+          startTime: new Date(event.start.dateTime || event.start.date),
+          endTime: new Date(event.end.dateTime || event.end.date),
+          calendarEventId: event.id,
+          calendarId,
+        };
+      }
+    }
+    
+    // For other events, extract phone number using pattern matching
+    const phone = this.extractPhoneNumber(combinedText);
+    if (!phone) {
+      return null; // No phone number found, skip this event
+    }
+    
+    // Extract patient name (common patterns: "Patient: Name", "Name -", "Appointment with Name")
+    let patientName = 'Patient';
+    const namePatterns = [
+      /(?:patient|name)[\s:]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/i,
+      /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)[\s-]+(?:appointment|booking)/i,
+      /appointment[\s-]+with[\s-]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/i,
+    ];
+    
+    for (const pattern of namePatterns) {
+      const match = combinedText.match(pattern);
+      if (match && match[1]) {
+        patientName = match[1].trim();
+        break;
+      }
+    }
+    
+    // Extract treatment type if mentioned
+    let treatment = null;
+    const treatmentKeywords = ['cleaning', 'filling', 'braces', 'consultation', 'extraction', 'root canal'];
+    for (const keyword of treatmentKeywords) {
+      if (combinedText.toLowerCase().includes(keyword)) {
+        treatment = keyword.charAt(0).toUpperCase() + keyword.slice(1);
+        break;
+      }
+    }
+    
+    return {
+      patientPhone: phone,
+      patientName: patientName,
+      doctor: defaultDoctor,
+      treatment: treatment,
+      startTime: new Date(event.start.dateTime || event.start.date),
+      endTime: new Date(event.end.dateTime || event.end.date),
+      calendarEventId: event.id,
+      calendarId,
+    };
+  }
+
+  /**
+   * Retrieves all appointments for the next 2 months from all calendars.
+   * Searches ALL calendar events (not just AI-booked) and extracts appointments
+   * by finding phone numbers in event titles/descriptions.
    * 
    * @returns {Promise<Array>} Array of booking objects with patient and appointment details
    * 
@@ -607,19 +713,11 @@ class GoogleCalendarService {
    *     patientPhone: "+1234567890",
    *     patientName: "John Doe",
    *     doctor: "Dr GeneralA",
+   *     treatment: "Cleaning",
    *     startTime: Date(2024-01-15T10:00:00Z),
    *     endTime: Date(2024-01-15T10:30:00Z),
    *     calendarEventId: "event123",
    *     calendarId: "cal123@group.calendar.google.com"
-   *   },
-   *   {
-   *     patientPhone: "+0987654321",
-   *     patientName: "Jane Smith",
-   *     doctor: "Dr BracesB",
-   *     startTime: Date(2024-01-16T14:00:00Z),
-   *     endTime: Date(2024-01-16T14:45:00Z),
-   *     calendarEventId: "event456",
-   *     calendarId: "cal456@group.calendar.google.com"
    *   }
    * ]
    */
@@ -640,22 +738,9 @@ class GoogleCalendarService {
         });
 
         for (const event of events.data.items) {
-          // Parse patient info from event title
-          const title = event.summary || '';
-          if (title.includes('##AI Booked##')) {
-            const match = title.match(/##AI Booked##\s+(.+?)\s+(.+?)\s+(.+?)\s+(.+)/);
-            if (match) {
-              const [, doctorName, patientName, treatment, phone] = match;
-              bookings.push({
-                patientPhone: phone.trim(),
-                patientName: patientName.trim(),
-                doctor: doctorName.trim(),
-                startTime: new Date(event.start.dateTime || event.start.date),
-                endTime: new Date(event.end.dateTime || event.end.date),
-                calendarEventId: event.id,
-                calendarId,
-              });
-            }
+          const booking = this.parseEventToBooking(event, calendarId, doctor);
+          if (booking) {
+            bookings.push(booking);
           }
         }
       } catch (error) {
@@ -667,33 +752,44 @@ class GoogleCalendarService {
   }
 
   /**
+   * Normalizes phone number for comparison (removes formatting differences).
+   * 
+   * @param {string} phone - Phone number in any format
+   * @returns {string} Normalized phone number (digits only, with + prefix if present)
+   * @private
+   */
+  normalizePhoneNumber(phone) {
+    if (!phone) return '';
+    // Remove spaces, dashes, parentheses, keep + if present
+    const normalized = phone.replace(/[\s\-\(\)]/g, '');
+    return normalized;
+  }
+
+  /**
    * Finds a booking by patient's phone number.
    * 
-   * Searches through all AI-booked appointments (from all dentists) to find
-   * a match for the given phone number. This is used for cancellation flows
-   * where the user wants to cancel but we need to find their appointment first.
+   * Searches through ALL appointments (AI-booked and manually booked) from all dentists
+   * to find a match for the given phone number. Uses pattern matching to extract phone
+   * numbers from event titles and descriptions.
    * 
    * Process:
-   * 1. Calls getAllBookings() to fetch all appointments
-   * 2. Searches through bookings array
+   * 1. Calls getAllBookings() to fetch all appointments (searches all events)
+   * 2. Normalizes phone numbers for comparison (handles format differences)
    * 3. Returns first booking with matching phone number
    * 4. Returns undefined if no match found
    * 
    * Edge cases:
-   * - Returns first match if multiple bookings exist (shouldn't happen normally)
-   * - Phone number must match exactly (case-sensitive, format-sensitive)
-   * - Only searches AI-booked appointments (events with "##AI Booked##" in title)
+   * - Returns first match if multiple bookings exist
+   * - Phone number matching handles format differences (+1234567890 vs 1234567890)
+   * - Searches ALL calendar events, not just AI-booked
    * - Returns undefined if no bookings found (not null)
    * 
-   * Performance:
-   * - Calls getAllBookings() which fetches from all calendars (can be slow)
-   * - Consider caching if called frequently
-   * 
-   * @param {string} phone - Patient's phone number (must match exactly, including format)
+   * @param {string} phone - Patient's phone number (any format: +1234567890, 1234567890, etc.)
    * @returns {Promise<Object|undefined>} Booking object if found, undefined if not found
    * @returns {string} [returns.patientPhone] - Patient phone number
    * @returns {string} [returns.patientName] - Patient name
    * @returns {string} [returns.doctor] - Doctor name
+   * @returns {string} [returns.treatment] - Treatment type (if available)
    * @returns {Date} [returns.startTime] - Appointment start time
    * @returns {Date} [returns.endTime] - Appointment end time
    * @returns {string} [returns.calendarEventId] - Google Calendar event ID
@@ -702,16 +798,7 @@ class GoogleCalendarService {
    * @example
    * // Booking found:
    * await findBookingByPhone("+1234567890")
-   * // Output:
-   * // {
-   * //   patientPhone: "+1234567890",
-   * //   patientName: "John Doe",
-   * //   doctor: "Dr GeneralA",
-   * //   startTime: Date(2024-01-15T10:00:00Z),
-   * //   endTime: Date(2024-01-15T10:30:00Z),
-   * //   calendarEventId: "event123",
-   * //   calendarId: "cal123@group.calendar.google.com"
-   * // }
+   * // Output: Booking object with appointment details
    * 
    * @example
    * // No booking found:
@@ -719,14 +806,21 @@ class GoogleCalendarService {
    * // Output: undefined
    * 
    * @example
-   * // Phone number format must match exactly:
-   * // If booking has "+1234567890" but search is "1234567890":
+   * // Format differences handled:
    * await findBookingByPhone("1234567890")  // Missing +
-   * // Output: undefined (format mismatch)
+   * // Still matches if event has "+1234567890"
    */
   async findBookingByPhone(phone) {
+    const normalizedSearchPhone = this.normalizePhoneNumber(phone);
     const bookings = await this.getAllBookings();
-    return bookings.find(booking => booking.patientPhone === phone);
+    
+    // Find booking with matching phone (normalized comparison)
+    return bookings.find(booking => {
+      const normalizedBookingPhone = this.normalizePhoneNumber(booking.patientPhone);
+      return normalizedBookingPhone === normalizedSearchPhone || 
+             normalizedBookingPhone.endsWith(normalizedSearchPhone) ||
+             normalizedSearchPhone.endsWith(normalizedBookingPhone);
+    });
   }
 }
 

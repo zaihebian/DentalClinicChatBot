@@ -1,0 +1,79 @@
+{
+  "summary": {
+    "totalTests": 3,
+    "passedTests": 1,
+    "failedTests": 2,
+    "successRate": "33.33%",
+    "averageResponseTime": "15213.00ms"
+  },
+  "intentDetectionAccuracy": {
+    "cancel": {
+      "accuracy": "100.00%",
+      "correct": 3,
+      "total": 3
+    }
+  },
+  "featureCoverage": {
+    "cancel": {
+      "successRate": "33.33%",
+      "passed": 1,
+      "failed": 2
+    }
+  },
+  "errors": [],
+  "testCases": [
+    {
+      "name": "Cancellation - Complete Flow",
+      "feature": "cancel",
+      "expectedIntent": "cancel",
+      "detectedIntent": "cancel",
+      "userMessage": "I want braces maintenance | My name is Charlie Wilson | Dr BracesA | Tomorrow at 10am | Yes | I want to cancel my appointment | Yes",
+      "response": "Your appointment has already been confirmed! Is there anything else I can help you with?",
+      "passed": false,
+      "responseTime": 22578,
+      "error": null
+    },
+    {
+      "name": "Cancellation - Decline Confirmation",
+      "feature": "cancel",
+      "expectedIntent": "cancel",
+      "detectedIntent": "cancel",
+      "userMessage": "I want braces maintenance | My name is David Lee | Dr BracesA | Tomorrow at 10am | Yes | I want to cancel my appointment | No",
+      "response": "Thank you for your response, David. If you change your mind or need further assistance in the future, feel free to reach out. Have a great day!",
+      "passed": false,
+      "responseTime": 21722,
+      "error": null
+    },
+    {
+      "name": "Cancellation - No Appointment Found",
+      "feature": "cancel",
+      "expectedIntent": "cancel",
+      "detectedIntent": "cancel",
+      "userMessage": "I want to cancel my appointment",
+      "response": "I could not find an appointment for your phone number. Please contact our receptionist for assistance.",
+      "passed": true,
+      "responseTime": 1339,
+      "error": null
+    }
+  ],
+  "problems": [
+    {
+      "severity": "HIGH",
+      "category": "Overall Performance",
+      "issue": "Low success rate: 33.33%",
+      "recommendation": "Review failed test cases and identify common failure patterns"
+    },
+    {
+      "severity": "MEDIUM",
+      "category": "Performance",
+      "issue": "High average response time: 15213.00ms",
+      "recommendation": "Optimize API calls, consider caching, or reduce AI model complexity"
+    },
+    {
+      "severity": "HIGH",
+      "category": "Feature Coverage",
+      "issue": "Low success rate for \"cancel\" feature: 33.33%",
+      "recommendation": "Review \"cancel\" implementation and fix identified bugs"
+    }
+  ]
+}

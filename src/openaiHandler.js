@@ -37,7 +37,8 @@ const INTENTS = {
   BOOKING: 'booking',
   CANCEL: 'cancel',
   RESCHEDULE: 'reschedule',
-  PRICE_INQUIRY: 'price_inquiry'
+  PRICE_INQUIRY: 'price_inquiry',
+  APPOINTMENT_INQUIRY: 'appointment_inquiry'
 };
 
 const VALID_INTENTS = Object.values(INTENTS);
@@ -200,22 +201,6 @@ class OpenAIHandler {
       eventId: session.eventId
     });
     
-    // Check for test commands to clear session (for testing purposes)
-    const testCommands = ['end session', 'clear session', 'reset session', 'new session'];
-    const normalizedMessage = userMessage.toLowerCase().trim();
-    const isTestCommand = testCommands.some(cmd => normalizedMessage === cmd);
-    
-    if (isTestCommand) {
-      console.log('🧪 [TEST COMMAND] Clearing session:', normalizedMessage);
-      sessionManager.endSession(conversationId);
-      // Create fresh session for next message
-      const newSession = sessionManager.getSession(conversationId);
-      sessionManager.updateSession(conversationId, { phone: phoneNumber });
-      sessionManager.addMessage(conversationId, 'user', userMessage);
-      sessionManager.addMessage(conversationId, 'assistant', '✅ Session cleared. Starting fresh conversation. How can I help you today?');
-      return '✅ Session cleared. Starting fresh conversation. How can I help you today?';
-    }
-    
     // Update phone if not set
     if (!session.phone) {
       sessionManager.updateSession(conversationId, { phone: phoneNumber });
@@ -224,10 +209,40 @@ class OpenAIHandler {
     // Add user message to history
     sessionManager.addMessage(conversationId, 'user', userMessage);
 
-    // STEP 1: Combined intent detection and information extraction (single AI call)
+    // STEP 1: Pre-check for appointment inquiry (before AI to avoid false booking intent)
+    // If user asks about existing appointment and one exists, force appointment_inquiry intent
+    const appointmentInquiryKeywords = ['when is my appointment', 'what time is my appointment', 'check my appointment', 'my appointment'];
+    const hasInquiryKeywords = appointmentInquiryKeywords.some(keyword => 
+      userMessage.toLowerCase().includes(keyword) && 
+      (userMessage.toLowerCase().includes('when') || userMessage.toLowerCase().includes('what') || userMessage.toLowerCase().includes('check'))
+    );
+    
+    let forceAppointmentInquiry = false;
+    if (hasInquiryKeywords && session.phone) {
+      // Check session first (faster, more reliable after booking)
+      let existingBooking = session.existingBooking;
+      
+      // If not in session, look it up
+      if (!existingBooking) {
+        existingBooking = await googleCalendarService.findBookingByPhone(session.phone).catch(() => null);
+      }
+      
+      if (existingBooking) {
+        console.log('📋 [PRE-AI] Appointment inquiry detected (user has existing appointment)');
+        forceAppointmentInquiry = true;
+      }
+    }
+    
+    // STEP 2: Combined intent detection and information extraction (single AI call)
     console.log('🔍 [PRE-AI] Combined intent detection and information extraction...');
     const combinedResult = await this.detectIntentsAndExtractInformation(userMessage, session);
-    const detectedIntents = combinedResult.intents;
+    let detectedIntents = combinedResult.intents;
+    
+    // Override intent if appointment inquiry was detected
+    if (forceAppointmentInquiry) {
+      detectedIntents = [INTENTS.APPOINTMENT_INQUIRY];
+      console.log('📋 [PRE-AI] Forced appointment_inquiry intent (bypassing AI detection)');
+    }
     const extracted = combinedResult.extracted;
     
     // Validate output format and content (defense in depth)
@@ -379,10 +394,11 @@ class OpenAIHandler {
     
     // Check for confirmation (slot pending + user confirms)
     if (freshSession.selectedSlot && freshSession.confirmationStatus === 'pending') {
-      const isConfirmation = CONFIRMATION_KEYWORDS.some(keyword => {
-        const regex = new RegExp(`\\b${keyword}\\b`, 'i');
-        return regex.test(userMessage);
+      const confirmationResult = await this.detectConfirmationOrDecline(userMessage, {
+        hasPendingSlot: true
       });
+      const isConfirmation = confirmationResult.isConfirmation;
+      const isDecline = confirmationResult.isDecline;
       
       if (isConfirmation) {
         console.log('✅ [PRE-AI] User confirmed slot, proceeding to booking...');
@@ -396,21 +412,25 @@ class OpenAIHandler {
           };
         } else {
           // Attempt booking
+          // FIX: Store selectedSlot values before booking (it gets cleared after successful booking)
+          const slotStartTime = freshSession.selectedSlot?.startTime;
+          const slotEndTime = freshSession.selectedSlot?.endTime;
+          
           try {
             const bookingMessage = await this.confirmBooking(conversationId, freshSession);
             // Check if booking succeeded by checking session for eventId
             const sessionAfterBooking = sessionManager.getSession(conversationId);
             if (sessionAfterBooking.eventId) {
-              // Booking succeeded
+              // Booking succeeded - store the actual booking message for early return
               actionResult = {
                 type: ACTION_TYPES.BOOKING,
                 success: true,
-                message: 'Appointment booked successfully',
+                message: bookingMessage, // Store actual message from confirmBooking
                 details: {
                   doctor: freshSession.dentistName,
                   treatment: freshSession.treatmentType,
-                  date: freshSession.selectedSlot.startTime.toLocaleDateString(),
-                  time: freshSession.selectedSlot.startTime.toLocaleTimeString()
+                  date: slotStartTime?.toLocaleDateString() || 'N/A',
+                  time: slotStartTime?.toLocaleTimeString() || 'N/A'
                 }
               };
             } else {
@@ -443,117 +463,37 @@ class OpenAIHandler {
             };
           }
         }
-        } else {
-          // User declined or unclear response
-          const isDecline = DECLINE_KEYWORDS.some(keyword => {
-            const regex = new RegExp(`\\b${keyword}\\b`, 'i');
-            return regex.test(userMessage);
-          });
-        
-        if (isDecline) {
-          console.log('❌ [PRE-AI] User declined slot');
-          sessionManager.updateSession(conversationId, { 
-            selectedSlot: null,
-            confirmationStatus: null 
-          });
-          actionResult = {
-            type: ACTION_TYPES.BOOKING,
-            success: false,
-            message: 'User declined the appointment slot',
-            declined: true
-          };
-        }
+      } else if (isDecline) {
+        // User declined slot
+        console.log('❌ [PRE-AI] User declined slot');
+        sessionManager.updateSession(conversationId, { 
+          selectedSlot: null,
+          confirmationStatus: null 
+        });
+        actionResult = {
+          type: ACTION_TYPES.BOOKING,
+          success: false,
+          message: 'User declined the appointment slot',
+          declined: true
+        };
       }
     }
     
-    // Check for cancellation confirmation (user says "yes" when existingBooking exists)
-    if (!actionResult && freshSession.existingBooking) {
-      const isConfirmation = CONFIRMATION_KEYWORDS.some(keyword => {
-        const regex = new RegExp(`\\b${keyword}\\b`, 'i');
-        return regex.test(userMessage);
-      });
-      
-      if (isConfirmation) {
-        console.log('✅ [PRE-AI] User confirmed cancellation, processing...');
-        try {
-          const cancellationMessage = await this.handleCancellation(conversationId, freshSession, userMessage);
-          const sessionAfterCancellation = sessionManager.getSession(conversationId);
-          
-          if (sessionAfterCancellation.existingBooking === null) {
-            // Cancellation succeeded
-            actionResult = {
-              type: ACTION_TYPES.CANCELLATION,
-              success: true,
-              message: 'Cancellation processed successfully',
-              details: {}
-            };
-          } else {
-            // Cancellation failed
-            actionResult = {
-              type: ACTION_TYPES.CANCELLATION,
-              success: false,
-              message: cancellationMessage || 'Cancellation failed',
-              details: {}
-            };
-          }
-        } catch (error) {
-          console.error('❌ [PRE-AI] Cancellation error:', error);
-          actionResult = {
-            type: ACTION_TYPES.CANCELLATION,
-            success: false,
-            message: error.message || 'Cancellation failed',
-            details: {}
-          };
-        }
-      }
-    }
-    
-    // Check for cancellation intent
+    // Handle cancellation: simple flow - check calendar, cancel if found, reply politely if not
     if (!actionResult && latestIntents.includes(INTENTS.CANCEL)) {
       console.log('🔄 [PRE-AI] Cancellation intent detected, processing cancellation...');
       try {
         const cancellationMessage = await this.handleCancellation(conversationId, freshSession, userMessage);
-        const sessionAfterCancellation = sessionManager.getSession(conversationId);
         
-        // Determine cancellation result based on session state
-        if (sessionAfterCancellation.existingBooking === null && freshSession.existingBooking) {
-          // Booking was cleared - cancellation succeeded
-          actionResult = {
-            type: ACTION_TYPES.CANCELLATION,
-            success: true,
-            message: 'Cancellation processed successfully',
-            details: {}
-          };
-        } else if (!sessionAfterCancellation.existingBooking && !freshSession.existingBooking) {
-          // No booking found
-          actionResult = {
-            type: ACTION_TYPES.CANCELLATION,
-            success: false,
-            message: 'No appointment found to cancel',
-            noBookingFound: true
-          };
-        } else if (sessionAfterCancellation.existingBooking && !freshSession.existingBooking) {
-          // Booking was just found - waiting for confirmation
-          actionResult = {
-            type: ACTION_TYPES.CANCELLATION,
-            success: false,
-            message: 'Found appointment, waiting for confirmation',
-            requiresConfirmation: true,
-            details: {
-              doctor: sessionAfterCancellation.existingBooking.doctor,
-              date: sessionAfterCancellation.existingBooking.startTime.toLocaleDateString(),
-              time: sessionAfterCancellation.existingBooking.startTime.toLocaleTimeString()
-            }
-          };
-        } else {
-          // Still waiting for confirmation or other state
-          actionResult = {
-            type: ACTION_TYPES.CANCELLATION,
-            success: false,
-            message: cancellationMessage || 'Processing cancellation',
-            details: {}
-          };
-        }
+        // Check if cancellation succeeded (message contains success indicator)
+        const wasCancelled = cancellationMessage.includes('cancelled successfully') || cancellationMessage.includes('✅');
+        
+        actionResult = {
+          type: ACTION_TYPES.CANCELLATION,
+          success: wasCancelled,
+          message: cancellationMessage,
+          details: {}
+        };
       } catch (error) {
         console.error('❌ [PRE-AI] Cancellation error:', error);
         actionResult = {
@@ -564,7 +504,49 @@ class OpenAIHandler {
         };
       }
     }
+    
+    // Priority 2: If booking just completed, check for booking acknowledgment
+    const bookingJustCompleted = freshSession.confirmationStatus === 'confirmed' && 
+                                  freshSession.eventId && 
+                                  !freshSession.selectedSlot;
+    
+    if (!actionResult && bookingJustCompleted) {
+      const confirmationCheck = await this.detectConfirmationOrDecline(userMessage, {
+        hasPendingSlot: false
+      });
+      if (confirmationCheck.isConfirmation) {
+        console.log('✅ [PRE-AI] User acknowledged booking completion');
+        actionResult = {
+          type: ACTION_TYPES.BOOKING,
+          success: true,
+          message: 'Your appointment has already been confirmed! Is there anything else I can help you with?',
+          details: {}
+        };
+      }
+    }
 
+    // FIX 3: Return early if booking was successful to prevent post-processing from running
+    // This prevents availability check from running again after successful booking
+    if (actionResult && actionResult.type === ACTION_TYPES.BOOKING && actionResult.success) {
+      console.log('✅ [PRE-AI] Booking successful, returning early to prevent post-processing');
+      const bookingMessage = actionResult.message || 'Appointment booked successfully';
+      const sessionAfterBooking = sessionManager.getSession(conversationId);
+      sessionManager.addMessage(conversationId, 'assistant', bookingMessage);
+      await googleSheetsService.logConversationTurn(conversationId, phoneNumber, 'assistant', bookingMessage, sessionAfterBooking);
+      return bookingMessage;
+    }
+    
+    // FIX: Return early if cancellation was processed (successful or requires confirmation)
+    // This ensures cancellation messages are returned immediately
+    if (actionResult && actionResult.type === ACTION_TYPES.CANCELLATION) {
+      console.log('🔄 [PRE-AI] Cancellation processed, returning cancellation message');
+      const cancellationMessage = actionResult.message || 'Cancellation processed';
+      const sessionAfterCancellation = sessionManager.getSession(conversationId);
+      sessionManager.addMessage(conversationId, 'assistant', cancellationMessage);
+      await googleSheetsService.logConversationTurn(conversationId, phoneNumber, 'assistant', cancellationMessage, sessionAfterCancellation);
+      return cancellationMessage;
+    }
+    
     // Build system prompt with context and action results
     const finalSessionForPrompt = sessionManager.getSession(conversationId);
     const systemPrompt = this.buildSystemPrompt(finalSessionForPrompt, actionResult);
@@ -660,15 +642,30 @@ class OpenAIHandler {
       if (session.patientName) {
         contextInfo.push(`Patient name: ${session.patientName}`);
       }
+      
+      // Check if user has existing appointment for context
+      let appointmentContext = '';
+      if (session.phone) {
+        try {
+          const existingBooking = await googleCalendarService.findBookingByPhone(session.phone);
+          if (existingBooking) {
+            appointmentContext = `IMPORTANT CONTEXT: User has an existing appointment with ${existingBooking.doctor} on ${existingBooking.startTime.toLocaleDateString()}. `;
+            contextInfo.push(`Existing appointment: ${existingBooking.doctor} on ${existingBooking.startTime.toLocaleDateString()}`);
+          }
+        } catch (error) {
+          // Ignore errors, continue without context
+        }
+      }
 
       const combinedPrompt = `You are an intent detection and information extraction system for a dental appointment chatbot. Analyze the user's message and perform TWO tasks:
 
 TASK 1: Detect intent(s)
-Available intents:
-- "booking": User wants to book/make/schedule a new appointment
+${appointmentContext}Available intents:
+- "booking": User wants to book/make/schedule a NEW appointment (not checking existing one)
 - "cancel": User wants to cancel an existing appointment
 - "reschedule": User wants to change/move/reschedule an existing appointment to a different time
 - "price_inquiry": User is asking about prices, costs, fees, or charges
+- "appointment_inquiry": User wants to check/view their EXISTING appointment details (time, date, doctor). Examples: "when is my appointment", "what time is my appointment", "check my appointment", "tell me about my appointment", "when do I have an appointment"
 
 Intent detection rules:
 1. Detect ALL relevant intents in the message (can be multiple)
@@ -676,7 +673,12 @@ Intent detection rules:
 3. Ignore confirmations or simple responses like "yes", "ok", "sure" unless they contain new intent
 4. If message is just confirming something (yes/no), return empty array
 5. Consider conversation context - if user is already in a booking flow and says "yes", don't add new booking intent
-6. DO NOT default to "booking" - if no intents detected, return empty array
+6. CRITICAL: "appointment_inquiry" vs "booking" distinction:
+   ${appointmentContext ? `   - USER HAS EXISTING APPOINTMENT (see context above). If user asks "when is my appointment", "what time is my appointment", "check my appointment" → ALWAYS use "appointment_inquiry", NOT "booking".` : ''}
+   - If user asks "when is my appointment", "what time is my appointment", "check my appointment" → "appointment_inquiry" (checking existing)
+   - If user says "I want to book", "schedule an appointment", "make an appointment" → "booking" (scheduling new)
+   - If message contains "my appointment" + question words (when/what/where) → "appointment_inquiry"
+7. DO NOT default to "booking" - if no intents detected, return empty array
 
 TASK 2: Extract structured information
 Available treatment types: ${VALID_TREATMENT_TYPES.join(', ')}
@@ -865,6 +867,7 @@ Available intents:
 - "cancel": User wants to cancel an existing appointment
 - "reschedule": User wants to change/move/reschedule an existing appointment to a different time
 - "price_inquiry": User is asking about prices, costs, fees, or charges
+- "appointment_inquiry": User wants to check/view their appointment details (time, date, doctor)
 
 Rules:
 1. Detect ALL relevant intents in the message (can be multiple)
@@ -960,6 +963,211 @@ JSON array:`;
   }
 
   /**
+   * Detects confirmation or decline intent from user message using AI.
+   * Understands natural language variations better than regex keyword matching.
+   * 
+   * @param {string} userMessage - User's message text
+   * @param {Object} context - Context about what user is confirming/declining
+   * @param {boolean} context.hasPendingSlot - Whether user has a pending appointment slot
+   * @param {boolean} context.hasExistingBooking - Whether user has an existing booking to cancel
+   * @returns {Promise<Object>} Object with isConfirmation, isDecline, and confidence
+   * @private
+   */
+  async detectConfirmationOrDecline(userMessage, context = {}) {
+    try {
+      const contextDescription = [];
+      if (context.hasPendingSlot) {
+        contextDescription.push('User has a pending appointment slot waiting for confirmation');
+      }
+      if (context.hasExistingBooking) {
+        contextDescription.push('User has an existing appointment that can be cancelled');
+      }
+      
+      const prompt = `Determine if the user is confirming or declining something.
+
+Context: ${contextDescription.join('. ') || 'General conversation'}
+
+User message: "${userMessage}"
+
+Return ONLY a JSON object with:
+- "isConfirmation": true/false (user is confirming/accepting)
+- "isDecline": true/false (user is declining/rejecting)
+- "confidence": 0.0-1.0 (confidence in the detection)
+
+Examples:
+- "yes", "ok", "sure", "that works", "sounds good" → isConfirmation: true
+- "no", "nope", "maybe later", "I'll pass" → isDecline: true
+- "maybe", "I'm not sure" → both false
+- "I want to change it" → isDecline: true (declining current option)
+
+JSON object:`;
+
+      const completion = await openai.chat.completions.create({
+        model: config.openai.model,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a confirmation/decline detection system. Always return ONLY a valid JSON object, no explanations, no markdown, just the JSON. Example: {"isConfirmation": true, "isDecline": false, "confidence": 0.95}'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.1,
+        max_tokens: 50,
+      });
+
+      const response = completion.choices[0]?.message?.content?.trim();
+      const result = JSON.parse(response);
+      
+      return {
+        isConfirmation: result.isConfirmation === true,
+        isDecline: result.isDecline === true,
+        confidence: result.confidence || 0.5
+      };
+    } catch (error) {
+      console.error('Error detecting confirmation/decline with AI, using fallback:', error);
+      // Fallback to simple keyword matching
+      const msg = userMessage.toLowerCase();
+      const hasConfirmationKeyword = CONFIRMATION_KEYWORDS.some(keyword => {
+        const regex = new RegExp(`\\b${keyword}\\b`, 'i');
+        return regex.test(msg);
+      });
+      const hasDeclineKeyword = DECLINE_KEYWORDS.some(keyword => {
+        const regex = new RegExp(`\\b${keyword}\\b`, 'i');
+        return regex.test(msg);
+      });
+      
+      return {
+        isConfirmation: hasConfirmationKeyword && !hasDeclineKeyword,
+        isDecline: hasDeclineKeyword,
+        confidence: 0.5
+      };
+    }
+  }
+
+  /**
+   * Extracts date and time preferences from user message using AI.
+   * AI understands natural language, then code calculates actual dates.
+   * 
+   * @param {string} userMessage - User's message text
+   * @param {Date} referenceDate - Reference date for relative dates (defaults to now)
+   * @returns {Promise<Object>} Object with extracted date/time information
+   * @returns {Date|null} returns.date - Calculated date object (or null)
+   * @returns {Object|null} returns.time - Time object with {hours, minutes} (or null)
+   * @private
+   */
+  async extractDateTimeWithAI(userMessage, referenceDate = new Date()) {
+    try {
+      const referenceDateStr = referenceDate.toISOString().split('T')[0];
+      const currentDay = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][referenceDate.getDay()];
+      
+      const prompt = `Extract date and time preferences from this message: "${userMessage}"
+
+Today is ${currentDay}, ${referenceDateStr}.
+
+Return ONLY a JSON object with:
+- "relative": string or null (e.g., "today", "tomorrow", "next Tuesday", "next week")
+- "absoluteDate": string or null (e.g., "2025-12-18" if specific date mentioned)
+- "time": string or null (e.g., "10:00", "14:30", "10am", "2pm", "afternoon", "morning")
+- "timeRange": object or null (e.g., {"start": "14:00", "end": "17:00"} for "afternoon")
+
+Examples:
+- "tomorrow at 10am" → {"relative": "tomorrow", "time": "10:00"}
+- "next Tuesday afternoon" → {"relative": "next Tuesday", "time": "afternoon"}
+- "December 18 at 2pm" → {"absoluteDate": "2025-12-18", "time": "14:00"}
+- "Monday morning" → {"relative": "Monday", "time": "morning"}
+
+JSON object:`;
+
+      const completion = await openai.chat.completions.create({
+        model: config.openai.model,
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a date/time extraction system. Always return ONLY a valid JSON object, no explanations, no markdown, just the JSON. Extract date and time preferences from natural language.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.1,
+        max_tokens: 100,
+      });
+
+      const response = completion.choices[0]?.message?.content?.trim();
+      const extracted = JSON.parse(response);
+      
+      // Convert AI extraction to format compatible with existing code
+      const result = {
+        date: null,
+        time: null,
+        dateRange: null
+      };
+      
+      // Calculate date from relative or absolute
+      if (extracted.absoluteDate) {
+        // Specific date mentioned
+        const dateParts = extracted.absoluteDate.split('-');
+        result.date = new Date(Date.UTC(
+          parseInt(dateParts[0], 10),
+          parseInt(dateParts[1], 10) - 1,
+          parseInt(dateParts[2], 10)
+        ));
+        result.date.setUTCHours(0, 0, 0, 0);
+      } else if (extracted.relative) {
+        // Relative date - use existing parseDateTimePreference logic for calculation
+        // But we'll call it with the relative string
+        const tempResult = parseDateTimePreference(extracted.relative, referenceDate);
+        result.date = tempResult.date;
+      }
+      
+      // Convert time string to {hours, minutes} format
+      if (extracted.time) {
+        const timeStr = extracted.time.toLowerCase();
+        
+        // Handle time ranges like "afternoon", "morning"
+        if (timeStr === 'morning') {
+          result.time = { hours: 9, minutes: 0 }; // Default morning time
+        } else if (timeStr === 'afternoon') {
+          result.time = { hours: 14, minutes: 0 }; // Default afternoon time
+        } else if (timeStr === 'evening') {
+          result.time = { hours: 17, minutes: 0 }; // Default evening time
+        } else {
+          // Parse time string (e.g., "10:00", "10am", "2pm")
+          const timeMatch = timeStr.match(/(\d{1,2}):?(\d{2})?\s*(am|pm)?/i);
+          if (timeMatch) {
+            let hours = parseInt(timeMatch[1], 10);
+            const minutes = timeMatch[2] ? parseInt(timeMatch[2], 10) : 0;
+            const period = timeMatch[3]?.toLowerCase();
+            
+            if (period === 'pm' && hours !== 12) {
+              hours += 12;
+            } else if (period === 'am' && hours === 12) {
+              hours = 0;
+            }
+            
+            result.time = { hours, minutes };
+          }
+        }
+      }
+      
+      // Handle time ranges
+      if (extracted.timeRange) {
+        result.dateRange = extracted.timeRange;
+      }
+      
+      return result;
+    } catch (error) {
+      console.error('Error extracting date/time with AI, using fallback:', error);
+      // Fallback to existing parseDateTimePreference
+      return parseDateTimePreference(userMessage, referenceDate);
+    }
+  }
+
+  /**
    * Fallback keyword-based intent detection used when AI detection fails.
    * Simple pattern matching as backup. Only used when OpenAI API fails or returns
    * invalid/unparseable response. Less accurate than AI but provides reliability.
@@ -997,7 +1205,7 @@ JSON array:`;
     const detectedIntents = [];
     
     // Simple keyword matching as fallback
-    if ((msg.includes('cancel') || msg.includes('cancellation')) && 
+    if ((msg.includes('cancel') || msg.includes('cancellation')) &&
         !msg.includes("don't") && !msg.includes('not')) {
       detectedIntents.push(INTENTS.CANCEL);
     }
@@ -1009,9 +1217,20 @@ JSON array:`;
         !msg.includes("don't") && !msg.includes('not')) {
       detectedIntents.push(INTENTS.PRICE_INQUIRY);
     }
+    // Appointment inquiry: check appointment details, time, when is my appointment
+    // Must check BEFORE booking to avoid false positives
+    if ((msg.includes('check') && msg.includes('appointment')) ||
+        (msg.includes('when') && msg.includes('appointment') && !msg.includes('book')) ||
+        (msg.includes('what time') && msg.includes('appointment')) ||
+        (msg.includes('my appointment') && (msg.includes('when') || msg.includes('time') || msg.includes('details')) && !msg.includes('book'))) {
+      detectedIntents.push(INTENTS.APPOINTMENT_INQUIRY);
+      // Don't add booking intent if appointment_inquiry is detected
+      return detectedIntents; // Early return to prevent booking intent
+    }
     if ((msg.includes('book') || msg.includes('appointment') || msg.includes('schedule')) &&
         !msg.includes("don't") && !msg.includes('not') &&
-        msg.length > 3 && !/^(yes|ok|okay|sure)$/i.test(msg)) {
+        msg.length > 3 && !/^(yes|ok|okay|sure)$/i.test(msg) &&
+        !detectedIntents.includes(INTENTS.APPOINTMENT_INQUIRY)) {
       detectedIntents.push(INTENTS.BOOKING);
     }
     
@@ -1451,7 +1670,7 @@ IMPORTANT RULES:
     });
 
     // Validate latestIntents format (defense in depth)
-    const validIntents = ['booking', 'cancel', 'reschedule', 'price_inquiry'];
+    const validIntents = ['booking', 'cancel', 'reschedule', 'price_inquiry', 'appointment_inquiry'];
     const validatedLatestIntents = Array.isArray(latestIntents)
       ? latestIntents
           .filter(intent => typeof intent === 'string' && VALID_INTENTS.includes(intent))
@@ -1462,9 +1681,61 @@ IMPORTANT RULES:
 
     // Handle price inquiry (only if price_inquiry intent exists)
     if (validatedLatestIntents.includes('price_inquiry')) {
-      console.log('💰 [POST-PROCESS] Price inquiry detected, fetching pricing info');
-      const pricing = await googleDocsService.getPricingInfo();
-      return aiResponse + '\n\n' + pricing.substring(0, 1000); // Limit response length
+      console.log('💰 [POST-PROCESS] Price inquiry detected, using AI to extract relevant pricing');
+      
+      const fullPricing = await googleDocsService.getPricingInfo();
+      
+      // Use AI to extract only relevant information based on user's question
+      const extractionPrompt = `Extract ONLY the pricing information relevant to this question: "${userMessage}"
+
+Pricing document:
+${fullPricing}
+
+Return ONLY the relevant pricing information that answers the question. Be concise.`;
+
+      const extractionCompletion = await openai.chat.completions.create({
+        model: config.openai.model,
+        messages: [
+          {
+            role: 'system',
+            content: 'Extract only relevant pricing information based on the user\'s question. Be concise and focused.'
+          },
+          {
+            role: 'user',
+            content: extractionPrompt
+          }
+        ],
+        temperature: 0.3,
+        max_tokens: 500,
+      });
+      
+      const relevantPricing = extractionCompletion.choices[0]?.message?.content || fullPricing.substring(0, 500);
+      return aiResponse + '\n\n' + relevantPricing;
+    }
+
+    // Handle appointment inquiry (user wants to check their appointment details)
+    if (validatedLatestIntents.includes('appointment_inquiry')) {
+      console.log('📋 [POST-PROCESS] Appointment inquiry detected, fetching appointment details');
+      
+      const currentSession = sessionManager.getSession(conversationId);
+      if (!currentSession.phone) {
+        return aiResponse + '\n\nI need your phone number to look up your appointment. Could you please provide it?';
+      }
+      
+      const booking = await googleCalendarService.findBookingByPhone(currentSession.phone);
+      
+      if (booking) {
+        const appointmentDetails = `Here are your appointment details:\n\n` +
+          `**Doctor:** ${booking.doctor}\n` +
+          `${booking.treatment ? `**Treatment:** ${booking.treatment}\n` : ''}` +
+          `**Date:** ${booking.startTime.toLocaleDateString()}\n` +
+          `**Time:** ${booking.startTime.toLocaleTimeString()} - ${booking.endTime.toLocaleTimeString()}\n` +
+          `\nIs there anything else I can help you with?`;
+        
+        return aiResponse + '\n\n' + appointmentDetails;
+      } else {
+        return aiResponse + '\n\nI could not find an appointment for your phone number. Please contact our receptionist for assistance.';
+      }
     }
 
     // Only check availability if booking intent exists and ready
@@ -1474,27 +1745,51 @@ IMPORTANT RULES:
                              (currentSession.intents && currentSession.intents.includes(INTENTS.BOOKING)) ||
                              (currentSession.intents && currentSession.intents.includes(INTENTS.RESCHEDULE));
     const hasTreatment = currentSession.treatmentType;
-    const noSlotPending = !currentSession.selectedSlot || validatedLatestIntents.includes(INTENTS.RESCHEDULE);
+    // Check both validatedLatestIntents and session intents for reschedule (consistent with hasBookingIntent)
+    const hasRescheduleIntent = validatedLatestIntents.includes(INTENTS.RESCHEDULE) ||
+                                (currentSession.intents && currentSession.intents.includes(INTENTS.RESCHEDULE));
+    const noSlotPending = !currentSession.selectedSlot || hasRescheduleIntent;
     const hasPatientName = currentSession.patientName;
+    
+    // FIX 5: Don't check availability if appointment is already confirmed (prevents showing slots after confirmation)
+    const isAlreadyConfirmed = currentSession.confirmationStatus === 'confirmed';
+    
+    // FIX 6: Clear selectedSlot when reschedule intent detected (so old slot isn't reused)
+    // FIX 2: Preserve dentistName when rescheduling to maintain original dentist preference
+    if (validatedLatestIntents.includes(INTENTS.RESCHEDULE) && currentSession.selectedSlot) {
+      console.log('🔄 [POST-PROCESS] Reschedule detected, clearing old selectedSlot');
+      // Preserve dentistName from selectedSlot if session.dentistName is not set
+      const dentistToPreserve = currentSession.dentistName || currentSession.selectedSlot?.doctor;
+      sessionManager.updateSession(conversationId, { 
+        selectedSlot: null,
+        confirmationStatus: null,
+        // Explicitly preserve dentistName to ensure original dentist preference is maintained
+        ...(dentistToPreserve && { dentistName: dentistToPreserve })
+      });
+      // Update currentSession reference after clearing
+      const updatedSession = sessionManager.getSession(conversationId);
+      Object.assign(currentSession, updatedSession);
+    }
     
     console.log('🔄 [POST-PROCESS] Availability check conditions:', {
       hasBookingIntent,
       hasTreatment,
       hasPatientName,
-      noSlotPending
+      noSlotPending,
+      isAlreadyConfirmed
     });
     
-    // Check availability only if booking intent + ready (no slot pending)
-    if (hasBookingIntent && hasTreatment && noSlotPending && hasPatientName) {
+    // Check availability only if booking intent + ready (no slot pending) AND not already confirmed
+    if (hasBookingIntent && hasTreatment && noSlotPending && hasPatientName && !isAlreadyConfirmed) {
       console.log('🔄 [POST-PROCESS] Booking intent detected, checking availability');
       
-      // Use date/time preference from session or default to 'anytime'
-      const dateTimePreference = currentSession.dateTimePreference || 'anytime';
-      console.log('🔄 [POST-PROCESS] Checking availability with preference:', dateTimePreference);
+      // FIX 2: Pass userMessage to checkAvailability so it can parse date preferences from current message
+      // This fixes "tomorrow" not being parsed correctly during reschedule
+      console.log('🔄 [POST-PROCESS] Checking availability with user message:', userMessage.substring(0, 50));
       
       // Get fresh session and check availability
       const updatedSession = sessionManager.getSession(conversationId);
-      return await this.checkAvailability(conversationId, updatedSession, dateTimePreference);
+      return await this.checkAvailability(conversationId, updatedSession, userMessage);
     }
 
     // If patient name missing but booking intent exists, let AI handle it (already in system prompt)
@@ -1574,13 +1869,6 @@ IMPORTANT RULES:
         numberOfTeeth: session.numberOfTeeth
       });
       
-      const treatmentDuration = calculateTreatmentDuration(
-        session.treatmentType,
-        session.dentistName,
-        session.numberOfTeeth
-      );
-      console.log('📅 [AVAILABILITY] Calculated treatment duration:', treatmentDuration, 'minutes');
-
       // REQUIREMENT: Always fetch fresh availability data (no caching)
       // This ensures availability data is always up-to-date on every check
       const availableDentists = getAvailableDentists(session.treatmentType);
@@ -1626,12 +1914,30 @@ IMPORTANT RULES:
         console.log('📅 [AVAILABILITY] No dentist specified, will auto-select based on earliest availability');
       }
 
+      // FIX 1: Calculate treatment duration using max duration for braces when dentist not specified
+      // For braces maintenance, if dentist not specified, use maximum duration (45 min) to ensure we find slots
+      // that work for both dentists. Duration will be recalculated correctly after dentist is selected.
+      let treatmentDuration;
+      if (session.treatmentType === TREATMENT_TYPES.BRACES_MAINTENANCE && !dentistToUse) {
+        // Use maximum duration for braces (Dr BracesB = 45 min) when dentist not specified
+        treatmentDuration = 45;
+        console.log('📅 [AVAILABILITY] Dentist not specified for braces, using max duration (45 min) for slot filtering');
+      } else {
+        treatmentDuration = calculateTreatmentDuration(
+          session.treatmentType,
+          dentistToUse || session.dentistName, // Use dentistToUse if available, else session.dentistName
+          session.numberOfTeeth
+        );
+      }
+      console.log('📅 [AVAILABILITY] Calculated treatment duration:', treatmentDuration, 'minutes');
+
       // Try to find slot matching user preference
       let selectedSlot = null;
       
-      // Parse date/time preference from user message (e.g., "tomorrow at 10am", "next Tuesday")
-      const datePreference = parseDateTimePreference(userMessage);
-      console.log('📅 [AVAILABILITY] Parsed date preference:', {
+      // Extract date/time preference from user message using AI (language understanding)
+      // Then code calculates actual dates (math)
+      const datePreference = await this.extractDateTimeWithAI(userMessage, new Date());
+      console.log('📅 [AVAILABILITY] Extracted date preference:', {
         date: datePreference.date ? datePreference.date.toISOString() : null,
         time: datePreference.time ? `${datePreference.time.hours}:${datePreference.time.minutes}` : null
       });
@@ -1726,39 +2032,21 @@ IMPORTANT RULES:
       }
 
       if (selectedSlot) {
-        // Validate slot is within working hours (9 AM - 6 PM)
-        const slotHour = selectedSlot.startTime.getHours();
-        const slotMinute = selectedSlot.startTime.getMinutes();
-        const slotTimeMinutes = slotHour * 60 + slotMinute;
-        const workingStartMinutes = 9 * 60; // 9:00 AM
-        const workingEndMinutes = 18 * 60; // 6:00 PM
+        // Selected slot already came from validSlots (filtered by working hours at line 2001)
+        // No need to validate again - proceed directly to recalculating duration
         
-        if (slotTimeMinutes < workingStartMinutes || slotTimeMinutes >= workingEndMinutes) {
-          console.log('❌ [AVAILABILITY] Selected slot outside working hours:', {
-            slotTime: `${slotHour}:${slotMinute}`,
-            workingHours: '9:00 - 18:00'
-          });
-          // Find next available slot within working hours
-          const validSlots = dentistSlots.filter(slot => {
-            const hour = slot.startTime.getHours();
-            const minute = slot.startTime.getMinutes();
-            const timeMinutes = hour * 60 + minute;
-            return timeMinutes >= workingStartMinutes && timeMinutes < workingEndMinutes && slot.duration >= treatmentDuration;
-          });
-          
-          if (validSlots.length > 0) {
-            selectedSlot = validSlots[0];
-            console.log('✅ [AVAILABILITY] Found valid slot within working hours:', {
-              startTime: selectedSlot.startTime.toISOString()
-            });
-          } else {
-            console.log('❌ [AVAILABILITY] No valid slots within working hours');
-            return 'I apologize, but I could not find an available slot during working hours (9:00 AM - 6:00 PM, Monday-Friday). Would you like me to check for a different time, or would you prefer to contact our receptionist directly?';
-          }
-        }
+        // FIX 1 (continued): Recalculate duration with actual selected dentist to ensure accuracy
+        // Get fresh session to ensure we have latest state
+        const updatedSession = sessionManager.getSession(conversationId);
+        const finalTreatmentDuration = calculateTreatmentDuration(
+          updatedSession.treatmentType,
+          selectedSlot.doctor, // Use the actual selected dentist
+          updatedSession.numberOfTeeth
+        );
+        console.log('📅 [AVAILABILITY] Recalculated treatment duration with selected dentist:', finalTreatmentDuration, 'minutes');
         
         const endTime = new Date(selectedSlot.startTime);
-        endTime.setMinutes(endTime.getMinutes() + treatmentDuration);
+        endTime.setMinutes(endTime.getMinutes() + finalTreatmentDuration);
 
         console.log('✅ [AVAILABILITY] Setting selectedSlot in session:', {
           startTime: selectedSlot.startTime.toISOString(),
@@ -1767,16 +2055,13 @@ IMPORTANT RULES:
           hour: selectedSlot.startTime.getHours(),
           minute: selectedSlot.startTime.getMinutes()
         });
-
-        // Get fresh session to ensure we have latest state
-        const updatedSession = sessionManager.getSession(conversationId);
         
         sessionManager.updateSession(conversationId, {
           selectedSlot: {
             ...selectedSlot,
             endTime,
           },
-          treatmentDuration,
+          treatmentDuration: finalTreatmentDuration, // Use recalculated duration
           confirmationStatus: 'pending',
         });
         
@@ -1794,7 +2079,7 @@ IMPORTANT RULES:
           return 'I found an available slot, but I need your name first. What is your name?';
         }
 
-        return `I found an available slot:\n\nDoctor: ${selectedSlot.doctor}\nDate: ${selectedSlot.startTime.toLocaleDateString()}\nTime: ${selectedSlot.startTime.toLocaleTimeString()} - ${endTime.toLocaleTimeString()}\nDuration: ${treatmentDuration} minutes\n\nWould you like to confirm this appointment?`;
+        return `I found an available slot:\n\nDoctor: ${selectedSlot.doctor}\nDate: ${selectedSlot.startTime.toLocaleDateString()}\nTime: ${selectedSlot.startTime.toLocaleTimeString()} - ${endTime.toLocaleTimeString()}\nDuration: ${finalTreatmentDuration} minutes\n\nWould you like to confirm this appointment?`;
       } else {
         console.log('❌ [AVAILABILITY] No slots available');
         console.log('📅 [AVAILABILITY] Debug info:', {
@@ -1978,13 +2263,30 @@ IMPORTANT RULES:
         }
       }
 
+      // FIX: Validate and ensure startTime and endTime are Date objects before using
+      const startTime = session.selectedSlot?.startTime instanceof Date 
+        ? session.selectedSlot.startTime 
+        : new Date(session.selectedSlot?.startTime);
+      const endTime = session.selectedSlot?.endTime instanceof Date 
+        ? session.selectedSlot.endTime 
+        : new Date(session.selectedSlot?.endTime);
+      
+      // Validate dates are valid
+      if (isNaN(startTime.getTime()) || isNaN(endTime.getTime())) {
+        console.error('❌ [BOOKING] Invalid date values in selectedSlot:', {
+          startTime: session.selectedSlot?.startTime,
+          endTime: session.selectedSlot?.endTime
+        });
+        throw new Error('Invalid date values in selected slot');
+      }
+
       const appointmentData = {
         patientName: session.patientName || 'Patient',
         doctor: session.dentistName,
         treatment: session.treatmentType,
         phone: session.phone,
-        startTime: session.selectedSlot.startTime,
-        endTime: session.selectedSlot.endTime,
+        startTime: startTime,
+        endTime: endTime,
       };
 
       console.log('✅ [BOOKING] Creating calendar event with data:', {
@@ -1992,8 +2294,8 @@ IMPORTANT RULES:
         patientName: appointmentData.patientName,
         doctor: appointmentData.doctor,
         treatment: appointmentData.treatment,
-        startTime: appointmentData.startTime.toISOString(),
-        endTime: appointmentData.endTime.toISOString()
+        startTime: startTime.toISOString(),
+        endTime: endTime.toISOString()
       });
 
       const result = await googleCalendarService.createAppointment(calendarId, appointmentData);
@@ -2003,9 +2305,44 @@ IMPORTANT RULES:
           eventId: result.eventId
         });
 
+        // FIX 4: Store selectedSlot values BEFORE clearing to prevent null reference errors
+        // Store values in local variables for use in logging and return message
+        const slotStartTime = session.selectedSlot?.startTime;
+        const slotEndTime = session.selectedSlot?.endTime;
+        const slotStartTimeISO = slotStartTime?.toISOString();
+        const slotEndTimeISO = slotEndTime?.toISOString();
+        const slotStartTimeLocale = slotStartTime?.toLocaleDateString();
+        const slotStartTimeLocaleTime = slotStartTime?.toLocaleTimeString();
+        const slotEndTimeLocaleTime = slotEndTime?.toLocaleTimeString();
+
+        // FIX 4: Clear selectedSlot after successful booking to prevent post-processing from checking availability again
+        // Also store booking details in session for cancellation flow
+        // FIX 2: Ensure dates are Date objects (not strings) when storing in session
+        const bookingDetails = {
+          patientPhone: session.phone,
+          patientName: session.patientName,
+          doctor: session.dentistName,
+          treatment: session.treatmentType,
+          startTime: slotStartTime instanceof Date ? slotStartTime : new Date(slotStartTime),
+          endTime: slotEndTime instanceof Date ? slotEndTime : new Date(slotEndTime),
+          calendarEventId: result.eventId,
+          calendarId: calendarId,
+        };
+        
+        // Validate dates before storing
+        if (isNaN(bookingDetails.startTime.getTime()) || isNaN(bookingDetails.endTime.getTime())) {
+          console.error('❌ [BOOKING] Invalid dates in bookingDetails:', {
+            startTime: slotStartTime,
+            endTime: slotEndTime
+          });
+          throw new Error('Invalid date values in booking details');
+        }
+        
         sessionManager.updateSession(conversationId, {
           confirmationStatus: 'confirmed',
           eventId: result.eventId,
+          selectedSlot: null, // Clear to prevent re-checking availability
+          existingBooking: bookingDetails, // Store for cancellation flow
         });
 
         console.log('✅ [BOOKING] Session updated with confirmation');
@@ -2015,7 +2352,7 @@ IMPORTANT RULES:
         const logIntent = isReschedule ? INTENTS.RESCHEDULE : INTENTS.BOOKING;
         const logAction = isReschedule ? 'appointment_rescheduled' : 'booking_created';
 
-        // Log action
+        // Log action (using stored values)
         await googleSheetsService.logAction({
           conversationId,
           phone: session.phone,
@@ -2023,7 +2360,7 @@ IMPORTANT RULES:
           intent: logIntent,
           dentist: session.dentistName,
           treatment: session.treatmentType,
-          dateTime: `${session.selectedSlot.startTime.toISOString()} - ${session.selectedSlot.endTime.toISOString()}`,
+          dateTime: `${slotStartTimeISO} - ${slotEndTimeISO}`,
           eventId: result.eventId,
           status: 'confirmed',
           action: logAction,
@@ -2032,7 +2369,7 @@ IMPORTANT RULES:
         console.log('✅ [BOOKING] Booking logged to Google Sheets');
         console.log('✅ [BOOKING] Booking complete!');
 
-        return `✅ Appointment confirmed!\n\nDoctor: ${session.dentistName}\nTreatment: ${session.treatmentType}\nDate: ${session.selectedSlot.startTime.toLocaleDateString()}\nTime: ${session.selectedSlot.startTime.toLocaleTimeString()} - ${session.selectedSlot.endTime.toLocaleTimeString()}\n\nWe look forward to seeing you!`;
+        return `✅ Appointment confirmed!\n\nDoctor: ${session.dentistName}\nTreatment: ${session.treatmentType}\nDate: ${slotStartTimeLocale}\nTime: ${slotStartTimeLocaleTime} - ${slotEndTimeLocaleTime}\n\nWe look forward to seeing you!`;
       } else {
         console.log('❌ [BOOKING] Calendar event creation failed:', result.error);
         // Determine intent for logging (reschedule vs booking)
@@ -2153,72 +2490,88 @@ IMPORTANT RULES:
    */
   async handleCancellation(conversationId, session, userMessage) {
     try {
-      const msg = userMessage.toLowerCase();
+      // Find booking by phone
+      const booking = await googleCalendarService.findBookingByPhone(session.phone);
       
-      // If booking not yet retrieved, fetch it
-      if (!session.existingBooking) {
-        const booking = await googleCalendarService.findBookingByPhone(session.phone);
-        
-        if (!booking) {
-          await googleSheetsService.logAction({
-            conversationId,
-            phone: session.phone,
-            status: 'NEEDS FOLLOW-UP***************',
-            action: 'cancellation_not_found',
-          });
+      if (!booking) {
+        await googleSheetsService.logAction({
+          conversationId,
+          phone: session.phone,
+          status: 'NEEDS FOLLOW-UP***************',
+          action: 'cancellation_not_found',
+        });
 
-          return 'I could not find an appointment for your phone number. Please contact our receptionist for assistance.';
-        }
-
-        // Store booking in session for confirmation
-        sessionManager.updateSession(conversationId, { existingBooking: booking });
-        return `I found your appointment:\n\nDoctor: ${booking.doctor}\nDate: ${booking.startTime.toLocaleDateString()}\nTime: ${booking.startTime.toLocaleTimeString()}\n\nWould you like to confirm cancellation?`;
+        return 'I could not find an appointment for your phone number. Please contact our receptionist for assistance.';
       }
 
-      // Check if user confirmed cancellation
-      const booking = session.existingBooking;
-      if (msg.includes('yes') || msg.includes('confirm') || msg.includes('ok') || msg.includes('sure')) {
-        // User confirmed cancellation
-        const cancelResult = await googleCalendarService.cancelAppointment(
-          booking.calendarId,
-          booking.calendarEventId
+      // Validate booking object structure
+      const bookingStartTime = booking.startTime instanceof Date 
+        ? booking.startTime 
+        : new Date(booking.startTime);
+      const bookingEndTime = booking.endTime instanceof Date 
+        ? booking.endTime 
+        : new Date(booking.endTime);
+      
+      // Validate doctor name - if it looks like a calendar ID, try to get doctor name from calendarId
+      let doctorName = booking.doctor;
+      if (doctorName && doctorName.includes('@group.calendar.google.com')) {
+        const calendarIdToDoctor = Object.fromEntries(
+          Object.entries(config.calendar.dentistCalendars).map(([doc, cal]) => [cal, doc])
         );
-
-        if (cancelResult.success) {
-          await googleSheetsService.logAction({
-            conversationId,
-            phone: session.phone,
-            patientName: booking.patientName,
-            intent: INTENTS.CANCEL,
-            dentist: booking.doctor,
-            dateTime: `${booking.startTime.toISOString()} - ${booking.endTime.toISOString()}`,
-            eventId: booking.calendarEventId,
-            status: 'cancelled',
-            action: 'appointment_cancelled',
-          });
-
-          // Clear the booking from session
-          sessionManager.updateSession(conversationId, { existingBooking: null });
-          
-          return '✅ Your appointment has been cancelled successfully. We hope to see you again soon!';
-        } else {
-          await googleSheetsService.logAction({
-            conversationId,
-            phone: session.phone,
-            status: 'NEEDS FOLLOW-UP***************',
-            action: 'cancellation_failed',
-          });
-
-          return 'I apologize, there was an error cancelling your appointment. Please contact our receptionist.';
-        }
-      } else if (msg.includes('no') || msg.includes('cancel') || msg.includes('keep')) {
-        // User declined cancellation
-        sessionManager.updateSession(conversationId, { existingBooking: null });
-        return 'No problem. Your appointment remains scheduled. Is there anything else I can help you with?';
+        doctorName = calendarIdToDoctor[doctorName] || doctorName;
+        console.log('⚠️ [CANCELLATION] Found calendar ID as doctor, mapped to:', doctorName);
+      }
+      
+      // Validate dates are valid
+      if (isNaN(bookingStartTime.getTime()) || isNaN(bookingEndTime.getTime())) {
+        console.error('❌ [CANCELLATION] Invalid dates in booking:', {
+          startTime: booking.startTime,
+          endTime: booking.endTime
+        });
+        return 'I found your appointment, but there was an error reading the appointment details. Please contact our receptionist for assistance.';
       }
 
-      // Still waiting for confirmation
-      return `I found your appointment:\n\nDoctor: ${booking.doctor}\nDate: ${booking.startTime.toLocaleDateString()}\nTime: ${booking.startTime.toLocaleTimeString()}\n\nWould you like to confirm cancellation?`;
+      // Cancel immediately - no confirmation needed
+      console.log('🔄 [CANCELLATION] Cancelling appointment:', {
+        calendarId: booking.calendarId,
+        eventId: booking.calendarEventId,
+        phone: session.phone
+      });
+      
+      const cancelResult = await googleCalendarService.cancelAppointment(
+        booking.calendarId,
+        booking.calendarEventId
+      );
+      
+      console.log('🔄 [CANCELLATION] Cancel result:', cancelResult);
+
+      if (cancelResult.success) {
+        await googleSheetsService.logAction({
+          conversationId,
+          phone: session.phone,
+          patientName: booking.patientName,
+          intent: INTENTS.CANCEL,
+          dentist: doctorName,
+          dateTime: `${bookingStartTime.toISOString()} - ${bookingEndTime.toISOString()}`,
+          eventId: booking.calendarEventId,
+          status: 'cancelled',
+          action: 'appointment_cancelled',
+        });
+
+        // Clear the booking from session
+        sessionManager.updateSession(conversationId, { existingBooking: null });
+        
+        return '✅ Your appointment has been cancelled successfully. We hope to see you again soon!';
+      } else {
+        await googleSheetsService.logAction({
+          conversationId,
+          phone: session.phone,
+          status: 'NEEDS FOLLOW-UP***************',
+          action: 'cancellation_failed',
+        });
+
+        return 'I apologize, there was an error cancelling your appointment. Please contact our receptionist.';
+      }
     } catch (error) {
       console.error('Error handling cancellation:', error);
       return 'I apologize, I am having trouble processing your cancellation. Please contact our receptionist.';

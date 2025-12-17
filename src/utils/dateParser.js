@@ -129,10 +129,6 @@ export function parseDateTimePreference(message, referenceDate = new Date()) {
     result.date = new Date(referenceDate);
     result.date.setUTCDate(result.date.getUTCDate() + 1);
     result.date.setUTCHours(0, 0, 0, 0);
-  } else if (msg.includes('next week')) {
-    result.date = new Date(referenceDate);
-    result.date.setUTCDate(result.date.getUTCDate() + 7);
-    result.date.setUTCHours(0, 0, 0, 0);
   } else {
     // Parse day of week (Monday, Tuesday, etc.)
     const dayNames = {
@@ -148,16 +144,29 @@ export function parseDateTimePreference(message, referenceDate = new Date()) {
     let targetDay = null;
     let isNextWeek = false;
 
-    // Check for "next [day]" pattern
+    // FIX 6: Check for "next week [day]" pattern FIRST (before checking "next week" alone)
+    // This handles "next week Tuesday" correctly
     for (const [dayName, dayNum] of Object.entries(dayNames)) {
-      const nextPattern = new RegExp(`next\\s+${dayName}`, 'i');
-      if (nextPattern.test(msg)) {
+      const nextWeekDayPattern = new RegExp(`next\\s+week\\s+${dayName}`, 'i');
+      if (nextWeekDayPattern.test(msg)) {
         targetDay = dayNum;
         isNextWeek = true;
         break;
       }
     }
 
+    // Check for "next [day]" pattern (without "week")
+    if (!targetDay) {
+      for (const [dayName, dayNum] of Object.entries(dayNames)) {
+        const nextPattern = new RegExp(`next\\s+${dayName}`, 'i');
+        if (nextPattern.test(msg)) {
+          targetDay = dayNum;
+          isNextWeek = true;
+          break;
+        }
+      }
+    }
+    
     // Check for "this [day]" pattern
     if (!targetDay) {
       for (const [dayName, dayNum] of Object.entries(dayNames)) {
@@ -216,6 +225,11 @@ export function parseDateTimePreference(message, referenceDate = new Date()) {
 
       result.date = new Date(referenceDate);
       result.date.setUTCDate(result.date.getUTCDate() + daysToAdd);
+      result.date.setUTCHours(0, 0, 0, 0);
+    } else if (!targetDay && msg.includes('next week')) {
+      // Handle generic "next week" (no specific day mentioned)
+      result.date = new Date(referenceDate);
+      result.date.setUTCDate(result.date.getUTCDate() + 7);
       result.date.setUTCHours(0, 0, 0, 0);
     }
   }
