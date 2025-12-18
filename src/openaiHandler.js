@@ -201,6 +201,41 @@ class OpenAIHandler {
       eventId: session.eventId
     });
     
+    // Check for "end session" command - handle before any other processing
+    const endSessionPatterns = [
+      /end\s+session/i,
+      /clear\s+session/i,
+      /reset\s+session/i,
+      /start\s+over/i,
+      /restart/i,
+      /new\s+session/i
+    ];
+    
+    const isEndSessionCommand = endSessionPatterns.some(pattern => pattern.test(userMessage.trim()));
+    
+    if (isEndSessionCommand) {
+      console.log('🔄 [SESSION] End session command detected, clearing session');
+      
+      // Add user message and assistant response to history before ending session
+      sessionManager.addMessage(conversationId, 'user', userMessage);
+      const confirmationMessage = '✅ Your session has been cleared. Starting fresh! How can I help you today?';
+      sessionManager.addMessage(conversationId, 'assistant', confirmationMessage);
+      
+      // Log assistant response before ending session
+      await googleSheetsService.logConversationTurn(
+        conversationId,
+        phoneNumber,
+        'assistant',
+        confirmationMessage,
+        session
+      );
+      
+      // End the session (clears all state)
+      sessionManager.endSession(conversationId);
+      
+      return confirmationMessage;
+    }
+    
     // Update phone if not set
     if (!session.phone) {
       sessionManager.updateSession(session.conversationId, { phone: phoneNumber });
