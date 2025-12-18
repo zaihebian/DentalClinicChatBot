@@ -557,7 +557,7 @@ class OpenAIHandler {
     if (hasBookingIntent && hasTreatment && noSlotPending && hasPatientName && !isAlreadyConfirmed) {
       console.log('📅 [PRE-AI] Booking intent detected, checking availability before AI');
       try {
-        availabilityResult = await this.checkAvailability(session, userMessage);
+        availabilityResult = await this.checkAvailability(conversationId, session, userMessage);
         console.log('📅 [PRE-AI] Availability checked, result length:', availabilityResult?.length || 0);
         
         // If availability check returned a message (slots found), return it directly
@@ -2202,7 +2202,7 @@ Return ONLY the relevant pricing information that answers the question. Be conci
         });
         session.selectedSlot = null;
         session.confirmationStatus = null;
-        const alternativeSlots = await this.checkAvailability(session, 'anytime');
+        const alternativeSlots = await this.checkAvailability(session.conversationId, session, 'anytime');
         return { 
           success: false, 
           message: 'I apologize, but that time slot is no longer available. Let me check for other available times.\n\n' + alternativeSlots
