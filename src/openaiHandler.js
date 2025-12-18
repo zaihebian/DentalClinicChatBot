@@ -2577,6 +2577,12 @@ Return ONLY the relevant pricing information that answers the question. Be conci
             action: 'cancellation_not_found',
           });
 
+          // Clear cancel intent since no booking found
+          sessionManager.updateSession(session.conversationId, {
+            intents: []
+          });
+          session.intents = [];
+
           return { 
             success: false, 
             message: 'I could not find an appointment for your phone number. Please contact our receptionist for assistance.' 
@@ -2701,13 +2707,15 @@ Return ONLY the relevant pricing information that answers the question. Be conci
             action: 'appointment_cancelled',
           });
 
-          // Clear cancellation state
+          // Clear cancellation state and cancel intent
           sessionManager.updateSession(session.conversationId, { 
             existingBooking: null,
-            cancellationConfirmationPending: false
+            cancellationConfirmationPending: false,
+            intents: [] // Clear cancel intent after successful cancellation
           });
           session.existingBooking = null;
           session.cancellationConfirmationPending = false;
+          session.intents = [];
           
           return { 
             success: true, 
@@ -2727,13 +2735,15 @@ Return ONLY the relevant pricing information that answers the question. Be conci
           };
         }
       } else if (confirmationResult.isDecline) {
-        // User declined - clear cancellation state
+        // User declined - clear cancellation state and cancel intent
         sessionManager.updateSession(session.conversationId, {
           existingBooking: null,
-          cancellationConfirmationPending: false
+          cancellationConfirmationPending: false,
+          intents: [] // Clear cancel intent after user declines
         });
         session.existingBooking = null;
         session.cancellationConfirmationPending = false;
+        session.intents = [];
 
         return {
           success: false,
