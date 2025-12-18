@@ -172,6 +172,7 @@ class SessionManager {
       existingBookings: [], // Array of existing bookings for 2 months
       conversationHistory: [], // Array of { role: 'user'|'assistant', content: string, timestamp: Date }
       dateTimePreference: null, // User's date/time preference (stored for availability checks)
+      cancelledSlotToExclude: null, // { startTime, endTime, doctor } - exclude this slot during reschedule
       askedDoctorPreference: false, // Track if doctor preference question was asked
       askedDateTimePreference: false, // Track if date/time preference question was asked
       createdAt: Date.now(),

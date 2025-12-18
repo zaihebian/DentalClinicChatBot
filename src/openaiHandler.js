@@ -1943,7 +1943,11 @@ Return ONLY the relevant pricing information that answers the question. Be conci
       
       // Extract date/time preference from user message using AI (language understanding)
       // Then code calculates actual dates (math)
-      const datePreference = await this.extractDateTimeWithAI(userMessage, new Date());
+      // Use stored preference ONLY if we're in reschedule flow (cancelledSlotToExclude exists)
+      // This ensures we don't mix reschedule flow with normal booking flow
+      const datePreference = session.cancelledSlotToExclude && session.dateTimePreference
+        ? await this.extractDateTimeWithAI(session.dateTimePreference, new Date())
+        : await this.extractDateTimeWithAI(userMessage, new Date());
       console.log('📅 [AVAILABILITY] Extracted date preference:', {
         date: datePreference.date ? datePreference.date.toISOString() : null,
         time: datePreference.time ? `${datePreference.time.hours}:${datePreference.time.minutes}` : null
@@ -1962,7 +1966,32 @@ Return ONLY the relevant pricing information that answers the question. Be conci
         const hour = slot.startTime.getHours();
         const minute = slot.startTime.getMinutes();
         const timeMinutes = hour * 60 + minute;
-        return timeMinutes >= workingStartMinutes && timeMinutes < workingEndMinutes;
+        if (timeMinutes < workingStartMinutes || timeMinutes >= workingEndMinutes) return false;
+        
+        // Exclude cancelled slot if rescheduling
+        if (session.cancelledSlotToExclude) {
+          const cancelled = session.cancelledSlotToExclude;
+          const slotStart = slot.startTime.getTime();
+          const slotEnd = slotStart + (slot.duration * 60 * 1000);
+          const cancelledStart = cancelled.startTime instanceof Date 
+            ? cancelled.startTime.getTime() 
+            : new Date(cancelled.startTime).getTime();
+          const cancelledEnd = cancelled.endTime instanceof Date 
+            ? cancelled.endTime.getTime() 
+            : new Date(cancelled.endTime).getTime();
+          
+          // Exclude if same doctor and overlapping time
+          if (slot.doctor === cancelled.doctor && 
+              slotStart < cancelledEnd && slotEnd > cancelledStart) {
+            console.log('🚫 [AVAILABILITY] Excluding cancelled slot:', {
+              cancelled: new Date(cancelledStart).toISOString(),
+              slot: new Date(slotStart).toISOString()
+            });
+            return false;
+          }
+        }
+        
+        return true;
       });
       
       console.log('📅 [AVAILABILITY] Valid slots (dentist:', dentistToUse || 'any', ', within working hours):', validSlots.length);
@@ -2348,6 +2377,7 @@ Return ONLY the relevant pricing information that answers the question. Be conci
           eventId: result.eventId,
           selectedSlot: null, // Clear to prevent re-checking availability
           existingBooking: bookingDetails, // Store for cancellation flow
+          cancelledSlotToExclude: null // Clear cancelled slot exclusion after booking
         });
         
         // Update local session reference
@@ -2356,6 +2386,7 @@ Return ONLY the relevant pricing information that answers the question. Be conci
         session.eventId = result.eventId;
         session.selectedSlot = null;
         session.existingBooking = bookingDetails;
+        session.cancelledSlotToExclude = null;
 
         console.log('✅ [BOOKING] Session updated with confirmation');
 
@@ -2970,17 +3001,26 @@ Return ONLY the relevant pricing information that answers the question. Be conci
           // Continue anyway - we'll create new event and old one might need manual cleanup
         }
 
+        // Store cancelled slot to exclude it from available slots
+        const cancelledSlot = {
+          startTime: booking.startTime instanceof Date ? booking.startTime : new Date(booking.startTime),
+          endTime: booking.endTime instanceof Date ? booking.endTime : new Date(booking.endTime),
+          doctor: booking.doctor
+        };
+
         // Clear reschedule state and proceed to booking flow
         sessionManager.updateSession(session.conversationId, {
           existingBookingToReschedule: null,
           rescheduleConfirmationPending: false,
           eventId: null, // Clear old event ID
-          bookingConfirmed: false // Reset booking confirmed status
+          bookingConfirmed: false, // Reset booking confirmed status
+          cancelledSlotToExclude: cancelledSlot
         });
         session.existingBookingToReschedule = null;
         session.rescheduleConfirmationPending = false;
         session.eventId = null;
         session.bookingConfirmed = false;
+        session.cancelledSlotToExclude = cancelledSlot;
 
         return {
           success: true,
