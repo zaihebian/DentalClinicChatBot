@@ -2029,13 +2029,13 @@ Return ONLY the relevant pricing information that answers the question. Be conci
         session.confirmationStatus = 'pending';
         
         console.log('✅ [AVAILABILITY] Session updated, verification:', {
-          hasSelectedSlot: !!verifySession.selectedSlot,
-          confirmationStatus: verifySession.confirmationStatus,
-          slotStartTime: verifySession.selectedSlot?.startTime?.toISOString()
+          hasSelectedSlot: !!session.selectedSlot,
+          confirmationStatus: session.confirmationStatus,
+          slotStartTime: session.selectedSlot?.startTime?.toISOString()
         });
 
         // REQUIREMENT: Check patient name before offering confirmation
-        if (!verifySession.patientName) {
+        if (!session.patientName) {
           console.log('⚠️ [AVAILABILITY] Patient name missing, prompting before showing slot');
           return 'I found an available slot, but I need your name first. What is your name?';
         }
