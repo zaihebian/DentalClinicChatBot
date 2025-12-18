@@ -161,7 +161,12 @@ class SessionManager {
       treatmentDuration: null,
       numberOfTeeth: null, // For fillings
       selectedSlot: null, // { start, end, doctor, weekday }
-      confirmationStatus: 'pending', // 'pending' or 'confirmed'
+      // Separate boolean flags for each operation to avoid confusion
+      bookingConfirmationPending: false,  // true when slot selected, waiting for user to confirm booking
+      cancellationConfirmationPending: false,  // true when asking user to confirm cancellation
+      rescheduleConfirmationPending: false,  // true when asking user to confirm reschedule cancellation
+      bookingConfirmed: false,  // true after booking is successfully created (prevents duplicate bookings)
+      existingBookingToReschedule: null,  // { calendarId, calendarEventId, doctor, startTime, endTime, patientName } - booking user wants to reschedule
       availableSlots: [], // Array of available slots for 1 month (cached)
       availableSlotsTimestamp: null, // Timestamp when slots were fetched (for cache freshness)
       existingBookings: [], // Array of existing bookings for 2 months

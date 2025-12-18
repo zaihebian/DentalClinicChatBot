@@ -197,7 +197,8 @@ class OpenAIHandler {
         endTime: session.selectedSlot.endTime?.toISOString(),
         doctor: session.selectedSlot.doctor
       } : null,
-      confirmationStatus: session.confirmationStatus,
+      bookingConfirmationPending: session.bookingConfirmationPending,
+      bookingConfirmed: session.bookingConfirmed,
       eventId: session.eventId
     });
     
@@ -394,7 +395,8 @@ class OpenAIHandler {
     console.log('🔍 [SESSION STATE] After validation/updates:', {
       treatmentType: session.treatmentType,
       hasSelectedSlot: !!session.selectedSlot,
-      confirmationStatus: session.confirmationStatus
+      bookingConfirmationPending: session.bookingConfirmationPending,
+      bookingConfirmed: session.bookingConfirmed
     });
 
     // Default treatment to Consultation if booking intent but no treatment specified
@@ -410,19 +412,20 @@ class OpenAIHandler {
     // DEBUG: Log session state before confirmation check
     console.log('🔍 [CONFIRMATION CHECK] Session state:', {
       hasSelectedSlot: !!session.selectedSlot,
-      confirmationStatus: session.confirmationStatus,
+      bookingConfirmationPending: session.bookingConfirmationPending,
+      bookingConfirmed: session.bookingConfirmed,
       treatmentType: session.treatmentType,
       patientName: session.patientName,
       intents: session.intents
     });
     console.log('🔍 [CONFIRMATION CHECK] Condition evaluation:', {
       'session.selectedSlot exists': !!session.selectedSlot,
-      'confirmationStatus === pending': session.confirmationStatus === 'pending',
-      'will enter confirmation check': !!(session.selectedSlot && session.confirmationStatus === 'pending')
+      'bookingConfirmationPending': session.bookingConfirmationPending,
+      'will enter confirmation check': !!(session.selectedSlot && session.bookingConfirmationPending)
     });
     
     // Check for confirmation (slot pending + user confirms)
-    if (session.selectedSlot && session.confirmationStatus === 'pending') {
+    if (session.selectedSlot && session.bookingConfirmationPending) {
       const confirmationResult = await this.detectConfirmationOrDecline(userMessage, {
         hasPendingSlot: true
       });
@@ -475,10 +478,12 @@ class OpenAIHandler {
             // Clear state on error
             sessionManager.updateSession(session.conversationId, {
               selectedSlot: null,
-              confirmationStatus: null
+              bookingConfirmationPending: false,
+              bookingConfirmed: false
             });
             session.selectedSlot = null;
-            session.confirmationStatus = null;
+            session.bookingConfirmationPending = false;
+            session.bookingConfirmed = false;
             actionResult = {
               type: ACTION_TYPES.BOOKING,
               success: false,
@@ -492,10 +497,12 @@ class OpenAIHandler {
         console.log('❌ [PRE-AI] User declined slot');
         sessionManager.updateSession(session.conversationId, { 
           selectedSlot: null,
-          confirmationStatus: null 
+          bookingConfirmationPending: false,
+          bookingConfirmed: false
         });
         session.selectedSlot = null;
-        session.confirmationStatus = null;
+        session.bookingConfirmationPending = false;
+        session.bookingConfirmed = false;
         actionResult = {
           type: ACTION_TYPES.BOOKING,
           success: false,
@@ -549,32 +556,48 @@ class OpenAIHandler {
       return cancellationMessage;
     }
     
-    // Handle reschedule: clear old slot before AI (so AI knows we're looking for new slot)
-    if (latestIntents.includes(INTENTS.RESCHEDULE) && session.selectedSlot) {
-      console.log('🔄 [PRE-AI] Reschedule detected, clearing old selectedSlot');
-      const dentistToPreserve = session.dentistName || session.selectedSlot?.doctor;
-      sessionManager.updateSession(session.conversationId, { 
-        selectedSlot: null,
-        confirmationStatus: null,
-        ...(dentistToPreserve && { dentistName: dentistToPreserve })
-      });
-      session.selectedSlot = null;
-      session.confirmationStatus = null;
-      if (dentistToPreserve) {
-        session.dentistName = dentistToPreserve;
+    // Handle reschedule intent
+    if (latestIntents.includes(INTENTS.RESCHEDULE)) {
+      console.log('🔄 [RESCHEDULE] Reschedule intent detected');
+      
+      const rescheduleResult = await this.handleReschedule(session, userMessage);
+      
+      if (rescheduleResult.success && rescheduleResult.shouldProceedToBooking) {
+        // Old booking cancelled, proceed to booking flow
+        // Clear reschedule intent and set booking intent
+        sessionManager.updateSession(session.conversationId, {
+          intents: [INTENTS.BOOKING] // Switch to booking intent
+        });
+        session.intents = [INTENTS.BOOKING];
+        
+        // Return message and let booking flow continue
+        const rescheduleMessage = rescheduleResult.message;
+        sessionManager.addMessage(session.conversationId, 'assistant', rescheduleMessage);
+        await googleSheetsService.logConversationTurn(session.conversationId, phoneNumber, 'assistant', rescheduleMessage, session);
+        return rescheduleMessage;
+      } else if (rescheduleResult.success) {
+        // Reschedule completed but shouldn't proceed to booking (shouldn't happen)
+        const rescheduleMessage = rescheduleResult.message;
+        sessionManager.addMessage(session.conversationId, 'assistant', rescheduleMessage);
+        await googleSheetsService.logConversationTurn(session.conversationId, phoneNumber, 'assistant', rescheduleMessage, session);
+        return rescheduleMessage;
+      } else {
+        // Reschedule in progress or failed - return message
+        const rescheduleMessage = rescheduleResult.message;
+        sessionManager.addMessage(session.conversationId, 'assistant', rescheduleMessage);
+        await googleSheetsService.logConversationTurn(session.conversationId, phoneNumber, 'assistant', rescheduleMessage, session);
+        return rescheduleMessage;
       }
     }
     
     // Check availability BEFORE AI if booking intent + ready
     let availabilityResult = null;
-    const hasBookingIntent = latestIntents.includes(INTENTS.BOOKING) || 
-                             latestIntents.includes(INTENTS.RESCHEDULE) ||
-                             (session.intents && session.intents.includes(INTENTS.BOOKING)) ||
-                             (session.intents && session.intents.includes(INTENTS.RESCHEDULE));
+    const hasBookingIntent = latestIntents.includes(INTENTS.BOOKING) ||
+                             (session.intents && session.intents.includes(INTENTS.BOOKING));
     const hasTreatment = session.treatmentType;
     const noSlotPending = !session.selectedSlot;
     const hasPatientName = session.patientName;
-    const isAlreadyConfirmed = session.confirmationStatus === 'confirmed';
+    const isAlreadyConfirmed = session.bookingConfirmed;
     
     if (hasBookingIntent && hasTreatment && noSlotPending && hasPatientName && !isAlreadyConfirmed) {
       console.log('📅 [PRE-AI] Booking intent detected, checking availability before AI');
@@ -636,7 +659,8 @@ class OpenAIHandler {
         console.log('⚠️ [AI RESPONSE] WARNING: AI claimed scheduling but no event ID found - this may be a false claim');
         console.log('⚠️ [AI RESPONSE] Session state:', {
           hasSelectedSlot: !!session.selectedSlot,
-          confirmationStatus: session.confirmationStatus,
+          bookingConfirmationPending: session.bookingConfirmationPending,
+          bookingConfirmed: session.bookingConfirmed,
           eventId: session.eventId
         });
       }
@@ -1023,6 +1047,12 @@ JSON array:`;
       const contextDescription = [];
       if (context.hasPendingSlot) {
         contextDescription.push('User has a pending appointment slot waiting for confirmation');
+      }
+      if (context.hasPendingCancellation) {
+        contextDescription.push('User is being asked to confirm cancellation of an existing appointment');
+      }
+      if (context.hasPendingReschedule) {
+        contextDescription.push('User is being asked to confirm rescheduling of an existing appointment');
       }
       if (context.hasExistingBooking) {
         contextDescription.push('User has an existing appointment that can be cancelled');
@@ -1657,7 +1687,7 @@ Current conversation context:
       prompt += `- Selected slot (pending confirmation): ${session.selectedSlot.startTime.toLocaleString()}\n`;
       prompt += `- IMPORTANT: This slot is PENDING confirmation. Ask user to confirm, do NOT claim it's already scheduled.\n`;
     }
-    if (session.confirmationStatus === 'pending' && !actionResult) {
+    if (session.bookingConfirmationPending && !actionResult) {
       prompt += `- Status: Waiting for user confirmation of the selected slot\n`;
     }
 
@@ -2039,7 +2069,7 @@ Return ONLY the relevant pricing information that answers the question. Be conci
             endTime,
           },
           treatmentDuration: finalTreatmentDuration, // Use recalculated duration
-          confirmationStatus: 'pending',
+          bookingConfirmationPending: true,
         });
         
         // Update local session reference
@@ -2048,11 +2078,11 @@ Return ONLY the relevant pricing information that answers the question. Be conci
           endTime,
         };
         session.treatmentDuration = finalTreatmentDuration;
-        session.confirmationStatus = 'pending';
+        session.bookingConfirmationPending = true;
         
         console.log('✅ [AVAILABILITY] Session updated, verification:', {
           hasSelectedSlot: !!session.selectedSlot,
-          confirmationStatus: session.confirmationStatus,
+          bookingConfirmationPending: session.bookingConfirmationPending,
           slotStartTime: session.selectedSlot?.startTime?.toISOString()
         });
 
@@ -2120,7 +2150,7 @@ Return ONLY the relevant pricing information that answers the question. Be conci
    *   }
    * })
    * // Output: "✅ Appointment confirmed!\n\nDoctor: Dr GeneralA\nTreatment: Cleaning\nDate: 1/16/2024\nTime: 10:00 AM - 10:30 AM\n\nWe look forward to seeing you!"
-   * // Session updated: confirmationStatus="confirmed", eventId="[calendar event ID]"
+   * // Session updated: bookingConfirmed=true, bookingConfirmationPending=false, eventId="[calendar event ID]"
    * 
    * @example
    * // Missing patient name (uses default):
@@ -2220,10 +2250,12 @@ Return ONLY the relevant pricing information that answers the question. Be conci
         // Slot is no longer available, clear it and ask user to choose again
         sessionManager.updateSession(session.conversationId, { 
           selectedSlot: null,
-          confirmationStatus: null 
+          bookingConfirmationPending: false,
+          bookingConfirmed: false
         });
         session.selectedSlot = null;
-        session.confirmationStatus = null;
+        session.bookingConfirmationPending = false;
+        session.bookingConfirmed = false;
         const alternativeSlots = await this.checkAvailability(session.conversationId, session, 'anytime');
         return { 
           success: false, 
@@ -2233,28 +2265,7 @@ Return ONLY the relevant pricing information that answers the question. Be conci
 
       console.log('✅ [BOOKING] Slot validated, proceeding to create calendar event');
 
-      // If rescheduling, delete old event first
-      if (session.eventId && session.intents?.includes(INTENTS.RESCHEDULE)) {
-        console.log('🔄 [BOOKING] Reschedule detected, deleting old event:', session.eventId);
-        try {
-          const oldCalendarId = config.calendar.dentistCalendars[session.dentistName];
-          if (oldCalendarId) {
-            const cancelResult = await googleCalendarService.cancelAppointment(oldCalendarId, session.eventId);
-            if (cancelResult.success) {
-              console.log('✅ [BOOKING] Old event deleted successfully');
-              // Clear old eventId from session
-              sessionManager.updateSession(session.conversationId, { eventId: null });
-              session.eventId = null;
-            } else {
-              console.log('⚠️ [BOOKING] Failed to delete old event:', cancelResult.error);
-              // Continue anyway - we'll create new event and old one might need manual cleanup
-            }
-          }
-        } catch (error) {
-          console.error('⚠️ [BOOKING] Error deleting old event during reschedule:', error);
-          // Continue anyway - we'll create new event and old one might need manual cleanup
-        }
-      }
+      // Note: Old booking cancellation for reschedule is handled in handleReschedule() before reaching here
 
       // FIX: Validate and ensure startTime and endTime are Date objects before using
       const startTime = session.selectedSlot?.startTime instanceof Date 
@@ -2332,14 +2343,16 @@ Return ONLY the relevant pricing information that answers the question. Be conci
         }
         
         sessionManager.updateSession(session.conversationId, {
-          confirmationStatus: 'confirmed',
+          bookingConfirmed: true,
+          bookingConfirmationPending: false,
           eventId: result.eventId,
           selectedSlot: null, // Clear to prevent re-checking availability
           existingBooking: bookingDetails, // Store for cancellation flow
         });
         
         // Update local session reference
-        session.confirmationStatus = 'confirmed';
+        session.bookingConfirmed = true;
+        session.bookingConfirmationPending = false;
         session.eventId = result.eventId;
         session.selectedSlot = null;
         session.existingBooking = bookingDetails;
@@ -2347,7 +2360,8 @@ Return ONLY the relevant pricing information that answers the question. Be conci
         console.log('✅ [BOOKING] Session updated with confirmation');
 
         // Determine intent for logging (reschedule vs booking)
-        const isReschedule = session.intents?.includes(INTENTS.RESCHEDULE);
+        // Check if this was a reschedule (old booking was cancelled)
+        const isReschedule = session.existingBookingToReschedule !== null && session.existingBookingToReschedule !== undefined;
         const logIntent = isReschedule ? INTENTS.RESCHEDULE : INTENTS.BOOKING;
         const logAction = isReschedule ? 'appointment_rescheduled' : 'booking_created';
 
@@ -2378,13 +2392,15 @@ Return ONLY the relevant pricing information that answers the question. Be conci
         // Clear state on failure
         sessionManager.updateSession(session.conversationId, {
           selectedSlot: null,
-          confirmationStatus: null
+          bookingConfirmationPending: false,
+          bookingConfirmed: false
         });
         session.selectedSlot = null;
-        session.confirmationStatus = null;
+        session.bookingConfirmationPending = false;
+        session.bookingConfirmed = false;
         
         // Determine intent for logging (reschedule vs booking)
-        const isReschedule = session.intents?.includes(INTENTS.RESCHEDULE);
+        const isReschedule = session.existingBookingToReschedule !== null && session.existingBookingToReschedule !== undefined;
         const logIntent = isReschedule ? INTENTS.RESCHEDULE : INTENTS.BOOKING;
         const logAction = isReschedule ? 'reschedule_failed' : 'booking_failed';
         
@@ -2411,10 +2427,12 @@ Return ONLY the relevant pricing information that answers the question. Be conci
       // Clear state on error
       sessionManager.updateSession(session.conversationId, {
         selectedSlot: null,
-        confirmationStatus: null
+        bookingConfirmationPending: false,
+        bookingConfirmed: false
       });
       session.selectedSlot = null;
-      session.confirmationStatus = null;
+      session.bookingConfirmationPending = false;
+      session.bookingConfirmed = false;
       
       await googleSheetsService.logAction({
         conversationId: session.conversationId,
@@ -2515,99 +2533,213 @@ Return ONLY the relevant pricing information that answers the question. Be conci
    */
   async handleCancellation(session, userMessage) {
     try {
-      // Find booking by phone
-      const booking = await googleCalendarService.findBookingByPhone(session.phone);
-      
-      if (!booking) {
-        await googleSheetsService.logAction({
-          conversationId: session.conversationId,
-          phone: session.phone,
-          status: 'NEEDS FOLLOW-UP***************',
-          action: 'cancellation_not_found',
-        });
-
-        return { 
-          success: false, 
-          message: 'I could not find an appointment for your phone number. Please contact our receptionist for assistance.' 
-        };
-      }
-
-      // Validate booking object structure
-      const bookingStartTime = booking.startTime instanceof Date 
-        ? booking.startTime 
-        : new Date(booking.startTime);
-      const bookingEndTime = booking.endTime instanceof Date 
-        ? booking.endTime 
-        : new Date(booking.endTime);
-      
-      // Validate doctor name - if it looks like a calendar ID, try to get doctor name from calendarId
-      let doctorName = booking.doctor;
-      if (doctorName && doctorName.includes('@group.calendar.google.com')) {
-        const calendarIdToDoctor = Object.fromEntries(
-          Object.entries(config.calendar.dentistCalendars).map(([doc, cal]) => [cal, doc])
-        );
-        doctorName = calendarIdToDoctor[doctorName] || doctorName;
-        console.log('⚠️ [CANCELLATION] Found calendar ID as doctor, mapped to:', doctorName);
-      }
-      
-      // Validate dates are valid
-      if (isNaN(bookingStartTime.getTime()) || isNaN(bookingEndTime.getTime())) {
-        console.error('❌ [CANCELLATION] Invalid dates in booking:', {
-          startTime: booking.startTime,
-          endTime: booking.endTime
-        });
-        return { 
-          success: false, 
-          message: 'I found your appointment, but there was an error reading the appointment details. Please contact our receptionist for assistance.' 
-        };
-      }
-
-      // Cancel immediately - no confirmation needed
-      console.log('🔄 [CANCELLATION] Cancelling appointment:', {
-        calendarId: booking.calendarId,
-        eventId: booking.calendarEventId,
-        phone: session.phone
-      });
-      
-      const cancelResult = await googleCalendarService.cancelAppointment(
-        booking.calendarId,
-        booking.calendarEventId
-      );
-      
-      console.log('🔄 [CANCELLATION] Cancel result:', cancelResult);
-
-      if (cancelResult.success) {
-        await googleSheetsService.logAction({
-          conversationId: session.conversationId,
-          phone: session.phone,
-          patientName: booking.patientName,
-          intent: INTENTS.CANCEL,
-          dentist: doctorName,
-          dateTime: `${bookingStartTime.toISOString()} - ${bookingEndTime.toISOString()}`,
-          eventId: booking.calendarEventId,
-          status: 'cancelled',
-          action: 'appointment_cancelled',
-        });
-
-        // Clear the booking from session
-        sessionManager.updateSession(session.conversationId, { existingBooking: null });
-        session.existingBooking = null;
+      // Phase 1: Find booking and ask for confirmation
+      if (!session.cancellationConfirmationPending) {
+        // Find booking by phone
+        const booking = await googleCalendarService.findBookingByPhone(session.phone);
         
-        return { 
-          success: true, 
-          message: '✅ Your appointment has been cancelled successfully. We hope to see you again soon!' 
+        if (!booking) {
+          await googleSheetsService.logAction({
+            conversationId: session.conversationId,
+            phone: session.phone,
+            status: 'NEEDS FOLLOW-UP***************',
+            action: 'cancellation_not_found',
+          });
+
+          return { 
+            success: false, 
+            message: 'I could not find an appointment for your phone number. Please contact our receptionist for assistance.' 
+          };
+        }
+
+        // Validate booking object structure
+        const bookingStartTime = booking.startTime instanceof Date 
+          ? booking.startTime 
+          : new Date(booking.startTime);
+        const bookingEndTime = booking.endTime instanceof Date 
+          ? booking.endTime 
+          : new Date(booking.endTime);
+        
+        // Validate doctor name
+        let doctorName = booking.doctor;
+        if (doctorName && doctorName.includes('@group.calendar.google.com')) {
+          const calendarIdToDoctor = Object.fromEntries(
+            Object.entries(config.calendar.dentistCalendars).map(([doc, cal]) => [cal, doc])
+          );
+          doctorName = calendarIdToDoctor[doctorName] || doctorName;
+          console.log('⚠️ [CANCELLATION] Found calendar ID as doctor, mapped to:', doctorName);
+        }
+        
+        // Validate dates
+        if (isNaN(bookingStartTime.getTime()) || isNaN(bookingEndTime.getTime())) {
+          console.error('❌ [CANCELLATION] Invalid dates in booking:', {
+            startTime: booking.startTime,
+            endTime: booking.endTime
+          });
+          return { 
+            success: false, 
+            message: 'I found your appointment, but there was an error reading the appointment details. Please contact our receptionist for assistance.' 
+          };
+        }
+
+        // Store booking and ask for confirmation
+        sessionManager.updateSession(session.conversationId, {
+          existingBooking: booking,
+          cancellationConfirmationPending: true
+        });
+        session.existingBooking = booking;
+        session.cancellationConfirmationPending = true;
+
+        const formattedDate = bookingStartTime.toLocaleDateString('en-US', { 
+          month: 'numeric', 
+          day: 'numeric', 
+          year: 'numeric' 
+        });
+        const formattedStartTime = bookingStartTime.toLocaleTimeString('en-US', { 
+          hour: 'numeric', 
+          minute: '2-digit',
+          hour12: true 
+        });
+
+        return {
+          success: false, // Not cancelled yet, waiting for confirmation
+          message: `I found your appointment:\n\nDoctor: ${doctorName}\nDate: ${formattedDate}\nTime: ${formattedStartTime}\n\nWould you like to confirm cancellation?`
+        };
+      }
+
+      // Phase 2: User is confirming/declining
+      if (!session.existingBooking) {
+        // Should not happen, but handle gracefully
+        sessionManager.updateSession(session.conversationId, {
+          cancellationConfirmationPending: false
+        });
+        session.cancellationConfirmationPending = false;
+        return {
+          success: false,
+          message: 'I could not find your appointment details. Please try again or contact our receptionist.'
+        };
+      }
+
+      // Detect confirmation or decline
+      const confirmationResult = await this.detectConfirmationOrDecline(userMessage, {
+        hasPendingSlot: false,
+        hasPendingCancellation: true
+      });
+
+      if (confirmationResult.isConfirmation) {
+        // User confirmed - proceed with cancellation
+        const booking = session.existingBooking;
+        const bookingStartTime = booking.startTime instanceof Date 
+          ? booking.startTime 
+          : new Date(booking.startTime);
+        const bookingEndTime = booking.endTime instanceof Date 
+          ? booking.endTime 
+          : new Date(booking.endTime);
+        
+        let doctorName = booking.doctor;
+        if (doctorName && doctorName.includes('@group.calendar.google.com')) {
+          const calendarIdToDoctor = Object.fromEntries(
+            Object.entries(config.calendar.dentistCalendars).map(([doc, cal]) => [cal, doc])
+          );
+          doctorName = calendarIdToDoctor[doctorName] || doctorName;
+        }
+
+        console.log('🔄 [CANCELLATION] Cancelling appointment:', {
+          calendarId: booking.calendarId,
+          eventId: booking.calendarEventId,
+          phone: session.phone
+        });
+        
+        const cancelResult = await googleCalendarService.cancelAppointment(
+          booking.calendarId,
+          booking.calendarEventId
+        );
+        
+        console.log('🔄 [CANCELLATION] Cancel result:', cancelResult);
+
+        if (cancelResult.success) {
+          await googleSheetsService.logAction({
+            conversationId: session.conversationId,
+            phone: session.phone,
+            patientName: booking.patientName,
+            intent: INTENTS.CANCEL,
+            dentist: doctorName,
+            dateTime: `${bookingStartTime.toISOString()} - ${bookingEndTime.toISOString()}`,
+            eventId: booking.calendarEventId,
+            status: 'cancelled',
+            action: 'appointment_cancelled',
+          });
+
+          // Clear cancellation state
+          sessionManager.updateSession(session.conversationId, { 
+            existingBooking: null,
+            cancellationConfirmationPending: false
+          });
+          session.existingBooking = null;
+          session.cancellationConfirmationPending = false;
+          
+          return { 
+            success: true, 
+            message: '✅ Your appointment has been cancelled successfully. We hope to see you again soon!' 
+          };
+        } else {
+          await googleSheetsService.logAction({
+            conversationId: session.conversationId,
+            phone: session.phone,
+            status: 'NEEDS FOLLOW-UP***************',
+            action: 'cancellation_failed',
+          });
+
+          return { 
+            success: false, 
+            message: 'I apologize, there was an error cancelling your appointment. Please contact our receptionist.' 
+          };
+        }
+      } else if (confirmationResult.isDecline) {
+        // User declined - clear cancellation state
+        sessionManager.updateSession(session.conversationId, {
+          existingBooking: null,
+          cancellationConfirmationPending: false
+        });
+        session.existingBooking = null;
+        session.cancellationConfirmationPending = false;
+
+        return {
+          success: false,
+          message: 'No problem. Your appointment remains scheduled. Is there anything else I can help you with?'
         };
       } else {
-        await googleSheetsService.logAction({
-          conversationId: session.conversationId,
-          phone: session.phone,
-          status: 'NEEDS FOLLOW-UP***************',
-          action: 'cancellation_failed',
+        // Ambiguous response - re-ask confirmation
+        const booking = session.existingBooking;
+        const bookingStartTime = booking.startTime instanceof Date 
+          ? booking.startTime 
+          : new Date(booking.startTime);
+        const bookingEndTime = booking.endTime instanceof Date 
+          ? booking.endTime 
+          : new Date(booking.endTime);
+        
+        let doctorName = booking.doctor;
+        if (doctorName && doctorName.includes('@group.calendar.google.com')) {
+          const calendarIdToDoctor = Object.fromEntries(
+            Object.entries(config.calendar.dentistCalendars).map(([doc, cal]) => [cal, doc])
+          );
+          doctorName = calendarIdToDoctor[doctorName] || doctorName;
+        }
+
+        const formattedDate = bookingStartTime.toLocaleDateString('en-US', { 
+          month: 'numeric', 
+          day: 'numeric', 
+          year: 'numeric' 
+        });
+        const formattedStartTime = bookingStartTime.toLocaleTimeString('en-US', { 
+          hour: 'numeric', 
+          minute: '2-digit',
+          hour12: true 
         });
 
-        return { 
-          success: false, 
-          message: 'I apologize, there was an error cancelling your appointment. Please contact our receptionist.' 
+        return {
+          success: false,
+          message: `I found your appointment:\n\nDoctor: ${doctorName}\nDate: ${formattedDate}\nTime: ${formattedStartTime}\n\nWould you like to confirm cancellation?`
         };
       }
     } catch (error) {
@@ -2617,6 +2749,352 @@ Return ONLY the relevant pricing information that answers the question. Be conci
         message: 'I apologize, I am having trouble processing your cancellation. Please contact our receptionist.' 
       };
     }
+  }
+
+  /**
+   * Handles reschedule flow in two phases:
+   * Phase 1: Find all existing bookings by phone, ask user which one to reschedule
+   * Phase 2: User confirms → Cancel old booking → Proceed with booking flow for new slot
+   * 
+   * @param {Object} session - Current session object
+   * @param {string} userMessage - User's message
+   * @returns {Promise<Object>} { success: boolean, message: string, shouldProceedToBooking?: boolean }
+   */
+  async handleReschedule(session, userMessage) {
+    try {
+      // Phase 1: Find bookings and ask for confirmation
+      if (!session.rescheduleConfirmationPending) {
+        // Find all bookings by phone
+        const allBookings = await googleCalendarService.getAllBookings();
+        const normalizedSearchPhone = this.normalizePhoneNumber(session.phone);
+        const bookings = allBookings.filter(booking => {
+          const normalizedBookingPhone = this.normalizePhoneNumber(booking.patientPhone);
+          return normalizedBookingPhone === normalizedSearchPhone || 
+                 normalizedBookingPhone.endsWith(normalizedSearchPhone) ||
+                 normalizedSearchPhone.endsWith(normalizedBookingPhone);
+        });
+        
+        if (!bookings || bookings.length === 0) {
+          await googleSheetsService.logAction({
+            conversationId: session.conversationId,
+            phone: session.phone,
+            status: 'NEEDS FOLLOW-UP***************',
+            action: 'reschedule_not_found',
+          });
+
+          return { 
+            success: false, 
+            message: 'I could not find any appointments for your phone number. Would you like to book a new appointment instead?',
+            shouldProceedToBooking: false
+          };
+        }
+
+        // If only one booking, auto-select it
+        if (bookings.length === 1) {
+          const booking = bookings[0];
+          const bookingStartTime = booking.startTime instanceof Date 
+            ? booking.startTime 
+            : new Date(booking.startTime);
+          const bookingEndTime = booking.endTime instanceof Date 
+            ? booking.endTime 
+            : new Date(booking.endTime);
+          
+          let doctorName = booking.doctor;
+          if (doctorName && doctorName.includes('@group.calendar.google.com')) {
+            const calendarIdToDoctor = Object.fromEntries(
+              Object.entries(config.calendar.dentistCalendars).map(([doc, cal]) => [cal, doc])
+            );
+            doctorName = calendarIdToDoctor[doctorName] || doctorName;
+          }
+
+          const formattedDate = bookingStartTime.toLocaleDateString('en-US', { 
+            month: 'numeric', 
+            day: 'numeric', 
+            year: 'numeric' 
+          });
+          const formattedStartTime = bookingStartTime.toLocaleTimeString('en-US', { 
+            hour: 'numeric', 
+            minute: '2-digit',
+            hour12: true 
+          });
+
+          // Store booking and ask for confirmation
+          sessionManager.updateSession(session.conversationId, {
+            existingBookingToReschedule: booking,
+            rescheduleConfirmationPending: true
+          });
+          session.existingBookingToReschedule = booking;
+          session.rescheduleConfirmationPending = true;
+
+          return {
+            success: false, // Not rescheduled yet, waiting for confirmation
+            message: `I found your appointment:\n\nDoctor: ${doctorName}\nDate: ${formattedDate}\nTime: ${formattedStartTime}\n\nWould you like to reschedule this appointment?`,
+            shouldProceedToBooking: false
+          };
+        }
+
+        // Multiple bookings - list them and ask user to specify
+        let message = 'I found multiple appointments:\n\n';
+        bookings.forEach((booking, index) => {
+          const bookingStartTime = booking.startTime instanceof Date 
+            ? booking.startTime 
+            : new Date(booking.startTime);
+          const bookingEndTime = booking.endTime instanceof Date 
+            ? booking.endTime 
+            : new Date(booking.endTime);
+          
+          let doctorName = booking.doctor;
+          if (doctorName && doctorName.includes('@group.calendar.google.com')) {
+            const calendarIdToDoctor = Object.fromEntries(
+              Object.entries(config.calendar.dentistCalendars).map(([doc, cal]) => [cal, doc])
+            );
+            doctorName = calendarIdToDoctor[doctorName] || doctorName;
+          }
+
+          const formattedDate = bookingStartTime.toLocaleDateString('en-US', { 
+            month: 'numeric', 
+            day: 'numeric', 
+            year: 'numeric' 
+          });
+          const formattedStartTime = bookingStartTime.toLocaleTimeString('en-US', { 
+            hour: 'numeric', 
+            minute: '2-digit',
+            hour12: true 
+          });
+
+          message += `${index + 1}. Doctor: ${doctorName}, Date: ${formattedDate}, Time: ${formattedStartTime}\n`;
+        });
+        message += '\nWhich appointment would you like to reschedule? Please specify by number or date/time.';
+
+        // Store all bookings for selection
+        sessionManager.updateSession(session.conversationId, {
+          existingBookings: bookings,
+          rescheduleConfirmationPending: true
+        });
+        session.existingBookings = bookings;
+        session.rescheduleConfirmationPending = true;
+
+        return {
+          success: false,
+          message: message,
+          shouldProceedToBooking: false
+        };
+      }
+
+      // Phase 2: User is confirming/selecting booking to reschedule
+      if (session.existingBookings && session.existingBookings.length > 1) {
+        // User needs to select which booking to reschedule
+        const selectedBooking = this.selectBookingFromMessage(userMessage, session.existingBookings);
+        
+        if (!selectedBooking) {
+          // Could not determine which booking - re-ask
+          let message = 'I found multiple appointments:\n\n';
+          session.existingBookings.forEach((booking, index) => {
+            const bookingStartTime = booking.startTime instanceof Date 
+              ? booking.startTime 
+              : new Date(booking.startTime);
+            let doctorName = booking.doctor;
+            if (doctorName && doctorName.includes('@group.calendar.google.com')) {
+              const calendarIdToDoctor = Object.fromEntries(
+                Object.entries(config.calendar.dentistCalendars).map(([doc, cal]) => [cal, doc])
+              );
+              doctorName = calendarIdToDoctor[doctorName] || doctorName;
+            }
+            const formattedDate = bookingStartTime.toLocaleDateString('en-US', { 
+              month: 'numeric', 
+              day: 'numeric', 
+              year: 'numeric' 
+            });
+            const formattedStartTime = bookingStartTime.toLocaleTimeString('en-US', { 
+              hour: 'numeric', 
+              minute: '2-digit',
+              hour12: true 
+            });
+            message += `${index + 1}. Doctor: ${doctorName}, Date: ${formattedDate}, Time: ${formattedStartTime}\n`;
+          });
+          message += '\nWhich appointment would you like to reschedule? Please specify by number or date/time.';
+
+          return {
+            success: false,
+            message: message,
+            shouldProceedToBooking: false
+          };
+        }
+
+        // Store selected booking
+        sessionManager.updateSession(session.conversationId, {
+          existingBookingToReschedule: selectedBooking,
+          existingBookings: null
+        });
+        session.existingBookingToReschedule = selectedBooking;
+        session.existingBookings = null;
+      }
+
+      // Now we have a selected booking (either from single booking or user selection)
+      if (!session.existingBookingToReschedule) {
+        sessionManager.updateSession(session.conversationId, {
+          rescheduleConfirmationPending: false
+        });
+        session.rescheduleConfirmationPending = false;
+        return {
+          success: false,
+          message: 'I could not find the appointment to reschedule. Please try again or contact our receptionist.',
+          shouldProceedToBooking: false
+        };
+      }
+
+      // Detect confirmation or decline
+      const confirmationResult = await this.detectConfirmationOrDecline(userMessage, {
+        hasPendingSlot: false,
+        hasPendingCancellation: false,
+        hasPendingReschedule: true
+      });
+
+      if (confirmationResult.isConfirmation) {
+        // User confirmed - cancel old booking and proceed to booking flow
+        const booking = session.existingBookingToReschedule;
+        
+        console.log('🔄 [RESCHEDULE] Cancelling old appointment:', {
+          calendarId: booking.calendarId,
+          eventId: booking.calendarEventId,
+          phone: session.phone
+        });
+        
+        const cancelResult = await googleCalendarService.cancelAppointment(
+          booking.calendarId,
+          booking.calendarEventId
+        );
+        
+        if (!cancelResult.success) {
+          console.error('⚠️ [RESCHEDULE] Failed to cancel old appointment:', cancelResult);
+          // Continue anyway - we'll create new event and old one might need manual cleanup
+        }
+
+        // Clear reschedule state and proceed to booking flow
+        sessionManager.updateSession(session.conversationId, {
+          existingBookingToReschedule: null,
+          rescheduleConfirmationPending: false,
+          eventId: null, // Clear old event ID
+          bookingConfirmed: false // Reset booking confirmed status
+        });
+        session.existingBookingToReschedule = null;
+        session.rescheduleConfirmationPending = false;
+        session.eventId = null;
+        session.bookingConfirmed = false;
+
+        return {
+          success: true,
+          message: '✅ I\'ve cancelled your old appointment. Now let\'s find a new time slot for you.',
+          shouldProceedToBooking: true
+        };
+      } else if (confirmationResult.isDecline) {
+        // User declined - clear reschedule state
+        sessionManager.updateSession(session.conversationId, {
+          existingBookingToReschedule: null,
+          rescheduleConfirmationPending: false,
+          existingBookings: null
+        });
+        session.existingBookingToReschedule = null;
+        session.rescheduleConfirmationPending = false;
+        session.existingBookings = null;
+
+        return {
+          success: false,
+          message: 'No problem. Your appointment remains scheduled. Is there anything else I can help you with?',
+          shouldProceedToBooking: false
+        };
+      } else {
+        // Ambiguous response - re-ask confirmation
+        const booking = session.existingBookingToReschedule;
+        const bookingStartTime = booking.startTime instanceof Date 
+          ? booking.startTime 
+          : new Date(booking.startTime);
+        
+        let doctorName = booking.doctor;
+        if (doctorName && doctorName.includes('@group.calendar.google.com')) {
+          const calendarIdToDoctor = Object.fromEntries(
+            Object.entries(config.calendar.dentistCalendars).map(([doc, cal]) => [cal, doc])
+          );
+          doctorName = calendarIdToDoctor[doctorName] || doctorName;
+        }
+
+        const formattedDate = bookingStartTime.toLocaleDateString('en-US', { 
+          month: 'numeric', 
+          day: 'numeric', 
+          year: 'numeric' 
+        });
+        const formattedStartTime = bookingStartTime.toLocaleTimeString('en-US', { 
+          hour: 'numeric', 
+          minute: '2-digit',
+          hour12: true 
+        });
+
+        return {
+          success: false,
+          message: `I found your appointment:\n\nDoctor: ${doctorName}\nDate: ${formattedDate}\nTime: ${formattedStartTime}\n\nWould you like to reschedule this appointment?`,
+          shouldProceedToBooking: false
+        };
+      }
+    } catch (error) {
+      console.error('Error handling reschedule:', error);
+      return { 
+        success: false, 
+        message: 'I apologize, I am having trouble processing your reschedule request. Please contact our receptionist.',
+        shouldProceedToBooking: false
+      };
+    }
+  }
+
+  /**
+   * Helper function to select a booking from user message when multiple bookings exist
+   * @param {string} userMessage - User's message
+   * @param {Array} bookings - Array of booking objects
+   * @returns {Object|null} Selected booking or null if cannot determine
+   */
+  selectBookingFromMessage(userMessage, bookings) {
+    const message = userMessage.toLowerCase().trim();
+    
+    // Try to match by number (1, 2, 3, etc.)
+    const numberMatch = message.match(/\b(\d+)\b/);
+    if (numberMatch) {
+      const index = parseInt(numberMatch[1]) - 1;
+      if (index >= 0 && index < bookings.length) {
+        return bookings[index];
+      }
+    }
+    
+    // Try to match by date/time keywords
+    for (const booking of bookings) {
+      const bookingStartTime = booking.startTime instanceof Date 
+        ? booking.startTime 
+        : new Date(booking.startTime);
+      const formattedDate = bookingStartTime.toLocaleDateString('en-US', { 
+        month: 'long', 
+        day: 'numeric', 
+        year: 'numeric' 
+      });
+      const formattedTime = bookingStartTime.toLocaleTimeString('en-US', { 
+        hour: 'numeric', 
+        minute: '2-digit',
+        hour12: true 
+      });
+      
+      if (message.includes(formattedDate.toLowerCase()) || message.includes(formattedTime.toLowerCase())) {
+        return booking;
+      }
+    }
+    
+    return null;
+  }
+
+  /**
+   * Helper function to normalize phone numbers for comparison
+   * @param {string} phone - Phone number to normalize
+   * @returns {string} Normalized phone number
+   */
+  normalizePhoneNumber(phone) {
+    if (!phone) return '';
+    return phone.replace(/\D/g, ''); // Remove all non-digits
   }
 }
 
