@@ -387,7 +387,15 @@ class OpenAIHandler {
       sessionManager.updateSession(session.conversationId, sessionUpdates);
       // Update local session reference with changes
       Object.assign(session, sessionUpdates);
+      console.log('🔍 [SESSION UPDATE] Applied updates:', Object.keys(sessionUpdates));
     }
+
+    // DEBUG: Log session state after updates
+    console.log('🔍 [SESSION STATE] After validation/updates:', {
+      treatmentType: session.treatmentType,
+      hasSelectedSlot: !!session.selectedSlot,
+      confirmationStatus: session.confirmationStatus
+    });
 
     // Default treatment to Consultation if booking intent but no treatment specified
     if (!session.treatmentType && latestIntents.includes(INTENTS.BOOKING)) {
@@ -398,6 +406,20 @@ class OpenAIHandler {
 
     // STEP 3: Handle critical actions before AI (book/cancel)
     let actionResult = null; // { type: 'booking'|'cancellation', success: boolean, message: string, details: object }
+    
+    // DEBUG: Log session state before confirmation check
+    console.log('🔍 [CONFIRMATION CHECK] Session state:', {
+      hasSelectedSlot: !!session.selectedSlot,
+      confirmationStatus: session.confirmationStatus,
+      treatmentType: session.treatmentType,
+      patientName: session.patientName,
+      intents: session.intents
+    });
+    console.log('🔍 [CONFIRMATION CHECK] Condition evaluation:', {
+      'session.selectedSlot exists': !!session.selectedSlot,
+      'confirmationStatus === pending': session.confirmationStatus === 'pending',
+      'will enter confirmation check': !!(session.selectedSlot && session.confirmationStatus === 'pending')
+    });
     
     // Check for confirmation (slot pending + user confirms)
     if (session.selectedSlot && session.confirmationStatus === 'pending') {
