@@ -6,11 +6,11 @@
 
 ## ✨ Why Choose DentalCare AI?
 
-🤖 **AI-Powered Intelligence** - Natural conversations that understand your needs  
-⚡ **Instant Responses** - No waiting on hold or checking voicemail  
-📱 **WhatsApp Native** - Chat like you would with a friend  
-🕒 **Always Available** - 24/7 access to your dental clinic  
-💰 **Transparent Pricing** - Get cost estimates instantly  
+🤖 **AI-Powered Intelligence** - Natural conversations that understand your needs
+⚡ **Instant Responses** - No waiting on hold or checking voicemail
+📱 **WhatsApp Native** - Chat like you would with a friend
+🕒 **Always Available** - 24/7 access to your dental clinic
+💰 **Transparent Pricing** - Get cost estimates instantly
 📅 **Smart Scheduling** - Automatic dentist matching and availability checks
 
 ---
