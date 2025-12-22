@@ -1762,35 +1762,140 @@ IMPORTANT RULES:
     // Handle price inquiry
     if (latestIntents.includes('price_inquiry')) {
       console.log('💰 [POST-PROCESS] Price inquiry detected');
-      
-      const fullPricing = await googleDocsService.getPricingInfo();
-      
-      // Use AI to extract only relevant information based on user's question
-      const extractionPrompt = `Extract ONLY the pricing information relevant to this question: "${userMessage}"
 
-Pricing document:
-${fullPricing}
+      // Prevent double-processing: check if we recently provided pricing
+      const recentMessages = session.conversationHistory.slice(-3);
+      const hasRecentPricing = recentMessages.some(msg =>
+        msg.role === 'assistant' &&
+        (msg.content.includes('€') || msg.content.includes('$') ||
+         msg.content.includes('price') || msg.content.includes('cost'))
+      );
 
-Return ONLY the relevant pricing information that answers the question. Be concise.`;
+      if (hasRecentPricing && !userMessage.toLowerCase().match(/\b(price|cost|how much|fee|charge)\b/)) {
+        console.log('⚠️ [POST-PROCESS] Skipping price processing - recent pricing response detected');
+        // Clear the stale intent and return AI response as-is
+        sessionManager.updateSession(session.conversationId, {
+          intents: latestIntents.filter(intent => intent !== 'price_inquiry')
+        });
+        session.intents = session.intents.filter(intent => intent !== 'price_inquiry');
+        return aiResponse;
+      }
 
-      const extractionCompletion = await openai.chat.completions.create({
-        model: config.openai.model,
-        messages: [
-          {
+      // Step 1: Extract search terms from user's question
+      const keywordPrompt = `Analyze this question: "${userMessage}"
+
+Extract 2-4 key search terms or phrases that would help find relevant pricing information in a dental services price list.
+
+Return ONLY a JSON array of strings, no explanation:
+["term1", "term2", "term3"]`;
+
+      try {
+        const keywordCompletion = await openai.chat.completions.create({
+          model: config.openai.model,
+          messages: [{
             role: 'system',
-            content: 'Extract only relevant pricing information based on the user\'s question. Be concise and focused.'
-          },
-          {
+            content: 'You extract search keywords from pricing questions. Return only JSON arrays.'
+          }, {
             role: 'user',
-            content: extractionPrompt
+            content: keywordPrompt
+          }],
+          temperature: 0.1,
+          max_tokens: 100,
+        });
+
+        const keywordResponse = keywordCompletion.choices[0]?.message?.content?.trim();
+        let searchTerms = [];
+
+        try {
+          searchTerms = JSON.parse(keywordResponse);
+        } catch (e) {
+          // Fallback: basic word extraction
+          searchTerms = userMessage.toLowerCase()
+            .split(' ')
+            .filter(word => word.length > 2 && !['the', 'for', 'and', 'can', 'ask', 'price', 'cost', 'how', 'much'].includes(word))
+            .slice(0, 3);
+        }
+
+        // Step 2: Search pricing document with intelligent scoring
+        const fullPricing = await googleDocsService.getPricingInfo();
+        const pricingLines = fullPricing.split('\n').filter(line => line.trim());
+
+        const scoredLines = pricingLines.map(line => {
+          const lineLower = line.toLowerCase();
+          let score = 0;
+
+          for (const term of searchTerms) {
+            const termLower = term.toLowerCase();
+            if (lineLower.includes(termLower)) {
+              score += termLower.length;
+              if (lineLower.startsWith(termLower) || lineLower.includes(`${termLower}:`)) {
+                score += 10;
+              }
+            }
           }
-        ],
-        temperature: 0.3,
-        max_tokens: 500,
-      });
-      
-      const relevantPricing = extractionCompletion.choices[0]?.message?.content || fullPricing.substring(0, 500);
-      return aiResponse + '\n\n' + relevantPricing;
+
+          return { line, score };
+        }).filter(item => item.score > 0)
+          .sort((a, b) => b.score - a.score);
+
+        let relevantPricing = '';
+        if (scoredLines.length > 0) {
+          relevantPricing = scoredLines.slice(0, Math.min(5, scoredLines.length))
+            .map(item => item.line.trim()).join('\n');
+        } else {
+          relevantPricing = pricingLines.filter(line => /\d+.*€|\d+.*\$/.test(line)).slice(0, 3).join('\n');
+        }
+
+        // Step 3: Generate contextual response using conversation history
+        const recentHistory = session.conversationHistory.slice(-8);
+        const conversationContext = recentHistory.map(msg =>
+          `${msg.role === 'user' ? 'User' : 'Assistant'}: ${msg.content}`
+        ).join('\n');
+
+        const rewritePrompt = `Here is the recent conversation:
+
+${conversationContext}
+
+Current user message: "${userMessage}"
+
+The user is asking about pricing. Here is the relevant pricing information I found:
+${relevantPricing}
+
+Write a complete, natural response that provides the pricing information in context of the conversation. Be conversational and professional like a dental receptionist.`;
+
+        const rewriteCompletion = await openai.chat.completions.create({
+          model: config.openai.model,
+          messages: [{
+            role: 'system',
+            content: 'You are a polite and professional AI receptionist for a dental clinic. Use the conversation context to provide natural, contextual responses about pricing.'
+          }, {
+            role: 'user',
+            content: rewritePrompt
+          }],
+          temperature: 0.7,
+          max_tokens: 400,
+        });
+
+        const finalResponse = rewriteCompletion.choices[0]?.message?.content?.trim();
+
+        if (finalResponse) {
+          // ✅ CLEAR the price_inquiry intent after successful processing
+          sessionManager.updateSession(session.conversationId, {
+            intents: latestIntents.filter(intent => intent !== 'price_inquiry')
+          });
+          session.intents = session.intents.filter(intent => intent !== 'price_inquiry');
+
+          console.log('✅ [POST-PROCESS] Price inquiry processed successfully and intent cleared');
+          return finalResponse;
+        }
+
+      } catch (error) {
+        console.error('Price inquiry post-processing failed:', error);
+        // Don't clear intent on failure - allow retry
+      }
+
+      // Fallback: return original AI response without pricing
+      return aiResponse;
     }
 
     // Handle appointment inquiry
