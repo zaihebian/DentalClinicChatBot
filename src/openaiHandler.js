@@ -1064,6 +1064,10 @@ Context: ${contextDescription.join('. ') || 'General conversation'}
 
 User message: "${userMessage}"
 
+IMPORTANT: be careful with the difference between confirmation and selection.
+- Any mention of numbers, positions, or options (like "1", "2", "first", "second", "option 1") indicates SELECTION, not confirmation
+- "1", "2", "3", "the first", "the second one", "option 1", "yes the first one" → isConfirmation: false (selections)
+
 Return ONLY a JSON object with:
 - "isConfirmation": true/false (user is confirming/accepting)
 - "isDecline": true/false (user is declining/rejecting)
@@ -1901,24 +1905,25 @@ Write a complete, natural response that provides the pricing information in cont
     // Handle appointment inquiry
     if (latestIntents.includes('appointment_inquiry')) {
       console.log('📋 [POST-PROCESS] Appointment inquiry detected');
-      
+
       if (!session.phone) {
-        return aiResponse + '\n\nI need your phone number to look up your appointment. Could you please provide it?';
+        return 'I need your phone number to look up your appointment. Could you please provide it?';
       }
-      
+
       const booking = await googleCalendarService.findBookingByPhone(session.phone);
-      
+
       if (booking) {
         const appointmentDetails = `Here are your appointment details:\n\n` +
           `**Doctor:** ${booking.doctor}\n` +
+          `**Patient:** ${booking.patientName}\n` +
           `${booking.treatment ? `**Treatment:** ${booking.treatment}\n` : ''}` +
           `**Date:** ${booking.startTime.toLocaleDateString()}\n` +
           `**Time:** ${booking.startTime.toLocaleTimeString()} - ${booking.endTime.toLocaleTimeString()}\n` +
           `\nIs there anything else I can help you with?`;
-        
-        return aiResponse + '\n\n' + appointmentDetails;
+
+        return appointmentDetails; // Return details directly, not appended to AI response
       } else {
-        return aiResponse + '\n\nI could not find an appointment for your phone number. Please contact our receptionist for assistance.';
+        return 'I could not find an appointment for your phone number. Please contact our receptionist for assistance.';
       }
     }
 

@@ -21,6 +21,11 @@
 
 import { google } from 'googleapis';
 import { config } from './config.js';
+import OpenAI from 'openai';
+
+const openai = new OpenAI({
+  apiKey: config.openai.apiKey,
+});
 
 /**
  * GoogleCalendarService class handles all Google Calendar API operations.
@@ -632,71 +637,50 @@ class GoogleCalendarService {
    * @returns {Object|null} Booking object if phone found, null otherwise
    * @private
    */
-  parseEventToBooking(event, calendarId, defaultDoctor) {
+  async parseEventToBooking(event, calendarId, defaultDoctor) {
     const title = event.summary || '';
     const description = event.description || '';
-    const combinedText = `${title} ${description}`;
-    
-    // Try AI-booked format first (structured, reliable)
-    if (title.includes('##AI Booked##')) {
-      const match = title.match(/##AI Booked##\s+(.+?)\s+(.+?)\s+(.+?)\s+(.+)/);
-      if (match) {
-        const [, doctorName, patientName, treatment, phone] = match;
-        return {
-          patientPhone: phone.trim(),
-          patientName: patientName.trim(),
-          doctor: doctorName.trim(),
-          treatment: treatment.trim(),
-          startTime: new Date(event.start.dateTime || event.start.date),
-          endTime: new Date(event.end.dateTime || event.end.date),
-          calendarEventId: event.id,
-          calendarId,
-        };
-      }
+
+    try {
+      const response = await openai.chat.completions.create({
+        model: config.openai.model,
+        messages: [{
+          role: 'user',
+          content: `Extract appointment info from this calendar event. Return JSON only.
+
+Title: "${title}"
+Description: "${description}"
+
+Available doctors: Dr BracesA, Dr BracesB, Dr GeneralA, Dr GeneralB
+Available treatments: Cleaning, Braces Maintenance, Consultation, Filling, Root Canal, Extraction
+
+Return: {"doctor":"Dr Name", "patientName":"Patient Name", "treatment":"Treatment", "phone":"1234567890"}
+
+Use null if not found.`
+        }],
+        temperature: 0,
+        max_tokens: 100
+      });
+
+      const extracted = JSON.parse(response.choices[0].message.content);
+
+      // Must have phone number to be a valid booking
+      if (!extracted.phone) return null;
+
+      return {
+        patientPhone: extracted.phone,
+        patientName: extracted.patientName || 'Patient',
+        doctor: extracted.doctor || defaultDoctor,
+        treatment: extracted.treatment,
+        startTime: new Date(event.start.dateTime || event.start.date),
+        endTime: new Date(event.end.dateTime || event.end.date),
+        calendarEventId: event.id,
+        calendarId,
+      };
+    } catch (error) {
+      console.error('AI extraction failed:', error);
+      return null; // Gracefully fail
     }
-    
-    // For other events, extract phone number using pattern matching
-    const phone = this.extractPhoneNumber(combinedText);
-    if (!phone) {
-      return null; // No phone number found, skip this event
-    }
-    
-    // Extract patient name (common patterns: "Patient: Name", "Name -", "Appointment with Name")
-    let patientName = 'Patient';
-    const namePatterns = [
-      /(?:patient|name)[\s:]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/i,
-      /([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)[\s-]+(?:appointment|booking)/i,
-      /appointment[\s-]+with[\s-]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/i,
-    ];
-    
-    for (const pattern of namePatterns) {
-      const match = combinedText.match(pattern);
-      if (match && match[1]) {
-        patientName = match[1].trim();
-        break;
-      }
-    }
-    
-    // Extract treatment type if mentioned
-    let treatment = null;
-    const treatmentKeywords = ['cleaning', 'filling', 'braces', 'consultation', 'extraction', 'root canal'];
-    for (const keyword of treatmentKeywords) {
-      if (combinedText.toLowerCase().includes(keyword)) {
-        treatment = keyword.charAt(0).toUpperCase() + keyword.slice(1);
-        break;
-      }
-    }
-    
-    return {
-      patientPhone: phone,
-      patientName: patientName,
-      doctor: defaultDoctor,
-      treatment: treatment,
-      startTime: new Date(event.start.dateTime || event.start.date),
-      endTime: new Date(event.end.dateTime || event.end.date),
-      calendarEventId: event.id,
-      calendarId,
-    };
   }
 
   /**
