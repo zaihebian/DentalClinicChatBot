@@ -3280,7 +3280,9 @@ Write a complete, natural response that provides the pricing information in cont
    */
   normalizePhoneNumber(phone) {
     if (!phone) return '';
-    return phone.replace(/\D/g, ''); // Remove all non-digits
+    // Remove spaces, dashes, parentheses, keep + if present
+    const normalized = phone.replace(/[\s\-\(\)]/g, '');
+    return normalized;
   }
 }
 
