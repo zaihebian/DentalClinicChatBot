@@ -716,8 +716,9 @@ class OpenAIHandler {
       let appointmentContext = '';
       if (session.phone) {
         try {
-          const existingBooking = await googleCalendarService.findBookingByPhone(session.phone);
-          if (existingBooking) {
+          const existingBookings = await googleCalendarService.findBookingByPhone(session.phone);
+          if (existingBookings && existingBookings.length > 0) {
+            const existingBooking = existingBookings[0]; // Use first booking for context
             appointmentContext = `IMPORTANT CONTEXT: User has an existing appointment with ${existingBooking.doctor} on ${existingBooking.startTime.toLocaleDateString()}. `;
             contextInfo.push(`Existing appointment: ${existingBooking.doctor} on ${existingBooking.startTime.toLocaleDateString()}`);
           }
@@ -1911,25 +1912,43 @@ Write a complete, natural response that provides the pricing information in cont
         return 'I need your phone number to look up your appointment. Could you please provide it?';
       }
 
-      const booking = await googleCalendarService.findBookingByPhone(session.phone);
+      const bookings = await googleCalendarService.findBookingByPhone(session.phone);
 
-      console.log('🔍 APPOINTMENT_LOOKUP: Search result:', booking ? 'FOUND' : 'NOT FOUND');
-      if (booking) {
-        console.log('🔍 APPOINTMENT_LOOKUP: Found booking for', booking.patientName, 'with doctor', booking.doctor);
-      }
+      console.log('🔍 APPOINTMENT_LOOKUP: Search result:', bookings ? `${bookings.length} bookings found` : 'NOT FOUND');
       
-      if (booking) {
-        const appointmentDetails = `Here are your appointment details:\n\n` +
-          `**Doctor:** ${booking.doctor}\n` +
-          `**Patient:** ${booking.patientName}\n` +
-          `${booking.treatment ? `**Treatment:** ${booking.treatment}\n` : ''}` +
-          `**Date:** ${booking.startTime.toLocaleDateString()}\n` +
-          `**Time:** ${booking.startTime.toLocaleTimeString()} - ${booking.endTime.toLocaleTimeString()}\n` +
-          `\nIs there anything else I can help you with?`;
-        
-        return appointmentDetails; // Return details directly, not appended to AI response
+      if (bookings && bookings.length > 0) {
+        if (bookings.length === 1) {
+          // Single booking - show details
+          const booking = bookings[0];
+          console.log('🔍 APPOINTMENT_LOOKUP: Found booking for', booking.patientName, 'with doctor', booking.doctor);
+          
+          const appointmentDetails = `Here are your appointment details:\n\n` +
+            `**Doctor:** ${booking.doctor}\n` +
+            `**Patient:** ${booking.patientName}\n` +
+            `${booking.treatment ? `**Treatment:** ${booking.treatment}\n` : ''}` +
+            `**Date:** ${booking.startTime.toLocaleDateString()}\n` +
+            `**Time:** ${booking.startTime.toLocaleTimeString()} - ${booking.endTime.toLocaleTimeString()}\n` +
+            `\nIs there anything else I can help you with?`;
+          
+          return appointmentDetails;
+        } else {
+          // Multiple bookings - show all
+          let appointmentDetails = `You have ${bookings.length} upcoming appointments:\n\n`;
+          
+          bookings.forEach((booking, index) => {
+            appointmentDetails += `**Appointment ${index + 1}:**\n` +
+              `Doctor: ${booking.doctor}\n` +
+              `Patient: ${booking.patientName}\n` +
+              `${booking.treatment ? `Treatment: ${booking.treatment}\n` : ''}` +
+              `Date: ${booking.startTime.toLocaleDateString()}\n` +
+              `Time: ${booking.startTime.toLocaleTimeString()} - ${booking.endTime.toLocaleTimeString()}\n\n`;
+          });
+          
+          appointmentDetails += `Is there anything else I can help you with?`;
+          return appointmentDetails;
+        }
       } else {
-        return 'I could not find an appointment for your phone number. Please contact our receptionist for assistance.';
+        return 'I could not find any appointments for your phone number. Please contact our receptionist for assistance.';
       }
     }
 
@@ -2709,9 +2728,9 @@ Write a complete, natural response that provides the pricing information in cont
       // Phase 1: Find booking and ask for confirmation
       if (!session.cancellationConfirmationPending) {
         // Find booking by phone
-        const booking = await googleCalendarService.findBookingByPhone(session.phone);
+        const bookings = await googleCalendarService.findBookingByPhone(session.phone);
         
-        if (!booking) {
+        if (!bookings || bookings.length === 0) {
           await googleSheetsService.logAction({
             conversationId: session.conversationId,
             phone: session.phone,
@@ -2729,6 +2748,12 @@ Write a complete, natural response that provides the pricing information in cont
             success: false, 
             message: 'I could not find an appointment for your phone number. Please contact our receptionist for assistance.' 
           };
+        }
+
+        // Use first booking if multiple exist (could be enhanced to let user choose)
+        const booking = bookings.length === 1 ? bookings[0] : bookings[0];
+        if (bookings.length > 1) {
+          console.log(`⚠️ [CANCELLATION] Multiple bookings found (${bookings.length}), using first one`);
         }
 
         // Validate booking object structure

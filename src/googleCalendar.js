@@ -809,6 +809,8 @@ Use null if not found.`
     const normalizedPhone = this.normalizePhoneNumber(phone);
     console.log('🔍 DIRECT_SEARCH: Phone:', normalizedPhone);
     
+    const allBookings = []; // Collect all matching bookings
+    
     // Search each calendar directly for phone number
     for (const [doctor, calendarId] of Object.entries(config.calendar.dentistCalendars)) {
       try {
@@ -824,12 +826,12 @@ Use null if not found.`
 
         console.log(`📅 DIRECT_SEARCH: Found ${events.data.items.length} events matching phone for ${doctor}`);
 
-        // Only parse events that Google found matching the phone
+        // Parse all matching events (not just first one)
         for (const event of events.data.items) {
           const booking = await this.parseEventToBooking(event, calendarId, doctor);
           if (booking && this.normalizePhoneNumber(booking.patientPhone) === normalizedPhone) {
             console.log('✅ DIRECT_SEARCH: Found booking for', booking.patientName);
-            return booking;
+            allBookings.push(booking);
           }
         }
       } catch (error) {
@@ -837,8 +839,8 @@ Use null if not found.`
       }
     }
     
-    console.log('❌ DIRECT_SEARCH: No bookings found');
-    return null;
+    console.log(`📋 DIRECT_SEARCH: Total bookings found: ${allBookings.length}`);
+    return allBookings.length > 0 ? allBookings : null;
   }
 }
 
