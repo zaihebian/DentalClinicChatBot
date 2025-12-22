@@ -646,7 +646,7 @@ class GoogleCalendarService {
         model: config.openai.model,
         messages: [{
           role: 'user',
-          content: `Extract appointment info from this calendar event. Return JSON only.
+          content: `Extract appointment info from this calendar event. Return ONLY valid JSON, no markdown, no explanations.
 
 Title: "${title}"
 Description: "${description}"
@@ -654,7 +654,7 @@ Description: "${description}"
 Available doctors: Dr BracesA, Dr BracesB, Dr GeneralA, Dr GeneralB
 Available treatments: Cleaning, Braces Maintenance, Consultation, Filling, Root Canal, Extraction
 
-Return: {"doctor":"Dr Name", "patientName":"Patient Name", "treatment":"Treatment", "phone":"1234567890"}
+Return format: {"doctor":"Dr Name", "patientName":"Patient Name", "treatment":"Treatment", "phone":"1234567890"}
 
 Use null if not found.`
         }],
