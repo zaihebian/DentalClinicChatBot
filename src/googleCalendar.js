@@ -662,7 +662,16 @@ Use null if not found.`
         max_tokens: 100
       });
 
-      const extracted = JSON.parse(response.choices[0].message.content);
+      const aiResponse = response.choices[0].message.content;
+      console.log('🤖 AI_RESPONSE:', aiResponse.substring(0, 100) + (aiResponse.length > 100 ? '...' : ''));
+
+      if (aiResponse.includes('```')) {
+        console.error('❌ AI_PARSING: Response contains markdown, not valid JSON');
+        return null;
+      }
+
+      const extracted = JSON.parse(aiResponse);
+      console.log('✅ AI_PARSING: Successfully parsed booking for', extracted.patientName || 'unknown');
 
       // Must have phone number to be a valid booking
       if (!extracted.phone) return null;
@@ -720,6 +729,8 @@ Use null if not found.`
           singleEvents: true,
           orderBy: 'startTime',
         });
+
+        console.log(`📅 CALENDAR_EVENTS: Found ${events.data.items.length} events for ${doctor}`);
 
         for (const event of events.data.items) {
           const booking = this.parseEventToBooking(event, calendarId, doctor);
@@ -795,16 +806,25 @@ Use null if not found.`
    * // Still matches if event has "+1234567890"
    */
   async findBookingByPhone(phone) {
+    console.log('🔍 BOOKING_SEARCH: Input phone:', phone);
+    console.log('🔍 BOOKING_SEARCH: Normalized phone:', this.normalizePhoneNumber(phone));
+
     const normalizedSearchPhone = this.normalizePhoneNumber(phone);
     const bookings = await this.getAllBookings();
-    
+    console.log('🔍 BOOKING_SEARCH: Total bookings found:', bookings.length);
+
     // Find booking with matching phone (normalized comparison)
-    return bookings.find(booking => {
+    const result = bookings.find(booking => {
       const normalizedBookingPhone = this.normalizePhoneNumber(booking.patientPhone);
-      return normalizedBookingPhone === normalizedSearchPhone || 
+      return normalizedBookingPhone === normalizedSearchPhone ||
              normalizedBookingPhone.endsWith(normalizedSearchPhone) ||
              normalizedSearchPhone.endsWith(normalizedBookingPhone);
     });
+
+    if (!result) {
+      console.log('🔍 BOOKING_SEARCH: No matching booking found');
+    }
+    return result;
   }
 }
 

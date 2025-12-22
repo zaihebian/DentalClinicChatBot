@@ -1905,6 +1905,7 @@ Write a complete, natural response that provides the pricing information in cont
     // Handle appointment inquiry
     if (latestIntents.includes('appointment_inquiry')) {
       console.log('📋 [POST-PROCESS] Appointment inquiry detected');
+      console.log('🔍 APPOINTMENT_LOOKUP: Starting search for phone:', session.phone);
 
       if (!session.phone) {
         return 'I need your phone number to look up your appointment. Could you please provide it?';
@@ -1912,6 +1913,11 @@ Write a complete, natural response that provides the pricing information in cont
 
       const booking = await googleCalendarService.findBookingByPhone(session.phone);
 
+      console.log('🔍 APPOINTMENT_LOOKUP: Search result:', booking ? 'FOUND' : 'NOT FOUND');
+      if (booking) {
+        console.log('🔍 APPOINTMENT_LOOKUP: Found booking for', booking.patientName, 'with doctor', booking.doctor);
+      }
+      
       if (booking) {
         const appointmentDetails = `Here are your appointment details:\n\n` +
           `**Doctor:** ${booking.doctor}\n` +
@@ -1920,7 +1926,7 @@ Write a complete, natural response that provides the pricing information in cont
           `**Date:** ${booking.startTime.toLocaleDateString()}\n` +
           `**Time:** ${booking.startTime.toLocaleTimeString()} - ${booking.endTime.toLocaleTimeString()}\n` +
           `\nIs there anything else I can help you with?`;
-
+        
         return appointmentDetails; // Return details directly, not appended to AI response
       } else {
         return 'I could not find an appointment for your phone number. Please contact our receptionist for assistance.';
