@@ -1140,21 +1140,25 @@ JSON object:`;
       
       const prompt = `Extract date and time preferences from this message: "${userMessage}"
 
-Today is ${currentDay}, ${referenceDateStr}.
-
-Return ONLY a JSON object with:
-- "relative": string or null (e.g., "today", "tomorrow", "next Tuesday", "next week")
-- "absoluteDate": string or null (e.g., "2025-12-18" if specific date mentioned)
-- "time": string or null (e.g., "10:00", "14:30", "10am", "2pm", "afternoon", "morning")
-- "timeRange": object or null (e.g., {"start": "14:00", "end": "17:00"} for "afternoon")
-
-Examples:
-- "tomorrow at 10am" → {"relative": "tomorrow", "time": "10:00"}
-- "next Tuesday afternoon" → {"relative": "next Tuesday", "time": "afternoon"}
-- "December 18 at 2pm" → {"absoluteDate": "2025-12-18", "time": "14:00"}
-- "Monday morning" → {"relative": "Monday", "time": "morning"}
-
-JSON object:`;
+    Today is ${currentDay}, ${referenceDateStr}.
+    
+    This is a DENTAL APPOINTMENT BOOKING context. Look for any date/time preferences, even if they're buried in complex sentences.
+    
+    Return ONLY a JSON object with:
+    - "relative": string or null (e.g., "today", "tomorrow", "next Tuesday", "next week")
+    - "absoluteDate": string or null (e.g., "2025-12-18" if specific date mentioned)
+    - "time": string or null (e.g., "10:00", "14:30", "10am", "2pm", "afternoon", "morning")
+    - "timeRange": object or null (e.g., {"start": "14:00", "end": "17:00"} for "afternoon")
+    
+    Examples:
+    - "tomorrow at 10am" → {"relative": "tomorrow", "time": "10:00"}
+    - "can i book for tomorrow" → {"relative": "tomorrow"}
+    - "I need an appointment for next Tuesday afternoon" → {"relative": "next Tuesday", "time": "afternoon"}
+    - "book me for December 18 at 2pm" → {"absoluteDate": "2025-12-18", "time": "14:00"}
+    - "schedule for Monday morning" → {"relative": "Monday", "time": "morning"}
+    - "I want to come in tomorrow" → {"relative": "tomorrow"}
+    
+    JSON object:`;
 
       const completion = await openai.chat.completions.create({
         model: config.openai.model,
@@ -1173,7 +1177,23 @@ JSON object:`;
       });
 
       const response = completion.choices[0]?.message?.content?.trim();
-      const extracted = JSON.parse(response);
+      console.log('🔍 [AI EXTRACTION] Raw AI response for date/time:', response);
+
+      let extracted;
+      try {
+        extracted = JSON.parse(response);
+        console.log('✅ [AI EXTRACTION] Successfully parsed date/time JSON');
+      } catch (parseError) {
+        console.error('❌ [AI EXTRACTION] Failed to parse AI response as JSON:', parseError.message);
+        console.error('❌ [AI EXTRACTION] Raw response was:', response);
+
+        // Return default (null) values when parsing fails
+        return {
+          date: null,
+          time: null,
+          dateRange: null
+        };
+      }
       
       // Convert AI extraction to format compatible with existing code
       const result = {
@@ -1945,13 +1965,19 @@ Return ONLY the relevant pricing information that answers the question. Be conci
       // Then code calculates actual dates (math)
       // Use stored preference ONLY if we're in reschedule flow (cancelledSlotToExclude exists)
       // This ensures we don't mix reschedule flow with normal booking flow
-      const datePreference = session.cancelledSlotToExclude && session.dateTimePreference
+      const datePreference = session.dateTimePreference
         ? await this.extractDateTimeWithAI(session.dateTimePreference, new Date())
         : await this.extractDateTimeWithAI(userMessage, new Date());
+
+      // Enhanced logging for debugging date extraction issues
+      console.log('📅 [AVAILABILITY] User message:', userMessage);
       console.log('📅 [AVAILABILITY] Extracted date preference:', {
         date: datePreference.date ? datePreference.date.toISOString() : null,
         time: datePreference.time ? `${datePreference.time.hours}:${datePreference.time.minutes}` : null
       });
+      if (!datePreference.date && !datePreference.time) {
+        console.log('⚠️ [AVAILABILITY] WARNING: No date/time preference extracted from message');
+      }
       
       // Filter slots within working hours (9 AM - 6 PM)
       const workingStartMinutes = 9 * 60; // 9:00 AM
