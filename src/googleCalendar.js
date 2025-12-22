@@ -806,25 +806,39 @@ Use null if not found.`
    * // Still matches if event has "+1234567890"
    */
   async findBookingByPhone(phone) {
-    console.log('🔍 BOOKING_SEARCH: Input phone:', phone);
-    console.log('🔍 BOOKING_SEARCH: Normalized phone:', this.normalizePhoneNumber(phone));
+    const normalizedPhone = this.normalizePhoneNumber(phone);
+    console.log('🔍 DIRECT_SEARCH: Phone:', normalizedPhone);
+    
+    // Search each calendar directly for phone number
+    for (const [doctor, calendarId] of Object.entries(config.calendar.dentistCalendars)) {
+      try {
+        // Use Google Calendar's q parameter to search for phone
+        const events = await this.calendar.events.list({
+          calendarId,
+          timeMin: new Date().toISOString(),
+          timeMax: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000).toISOString(),
+          q: normalizedPhone, // Direct search - Google finds events with this phone
+          singleEvents: true,
+          orderBy: 'startTime',
+        });
 
-    const normalizedSearchPhone = this.normalizePhoneNumber(phone);
-    const bookings = await this.getAllBookings();
-    console.log('🔍 BOOKING_SEARCH: Total bookings found:', bookings.length);
+        console.log(`📅 DIRECT_SEARCH: Found ${events.data.items.length} events matching phone for ${doctor}`);
 
-    // Find booking with matching phone (normalized comparison)
-    const result = bookings.find(booking => {
-      const normalizedBookingPhone = this.normalizePhoneNumber(booking.patientPhone);
-      return normalizedBookingPhone === normalizedSearchPhone ||
-             normalizedBookingPhone.endsWith(normalizedSearchPhone) ||
-             normalizedSearchPhone.endsWith(normalizedBookingPhone);
-    });
-
-    if (!result) {
-      console.log('🔍 BOOKING_SEARCH: No matching booking found');
+        // Only parse events that Google found matching the phone
+        for (const event of events.data.items) {
+          const booking = await this.parseEventToBooking(event, calendarId, doctor);
+          if (booking && this.normalizePhoneNumber(booking.patientPhone) === normalizedPhone) {
+            console.log('✅ DIRECT_SEARCH: Found booking for', booking.patientName);
+            return booking;
+          }
+        }
+      } catch (error) {
+        console.error(`❌ DIRECT_SEARCH: Calendar search error for ${doctor}:`, error);
+      }
     }
-    return result;
+    
+    console.log('❌ DIRECT_SEARCH: No bookings found');
+    return null;
   }
 }
 
