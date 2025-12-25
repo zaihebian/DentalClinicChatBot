@@ -509,6 +509,38 @@ class OpenAIHandler {
           message: 'User declined the appointment slot',
           declined: true
         };
+      } else {
+        // Ambiguous response - re-ask confirmation
+        const slot = session.selectedSlot;
+        const slotStartTime = slot.startTime instanceof Date
+          ? slot.startTime
+          : new Date(slot.startTime);
+        const slotEndTime = slot.endTime instanceof Date
+          ? slot.endTime
+          : new Date(slot.endTime);
+
+        const formattedDate = slotStartTime.toLocaleDateString('en-US', {
+          month: 'numeric',
+          day: 'numeric',
+          year: 'numeric'
+        });
+        const formattedStartTime = slotStartTime.toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true
+        });
+        const formattedEndTime = slotEndTime.toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true
+        });
+
+        actionResult = {
+          type: ACTION_TYPES.BOOKING,
+          success: false,
+          message: `I found this available slot:\n\nDoctor: ${session.dentistName}\nDate: ${formattedDate}\nTime: ${formattedStartTime} - ${formattedEndTime}\nTreatment: ${session.treatmentType}\n\nWould you like to confirm this appointment?`,
+          ambiguous: true
+        };
       }
     }
     
