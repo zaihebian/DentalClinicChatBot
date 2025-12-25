@@ -3004,15 +3004,8 @@ Write a complete, natural response that provides the pricing information in cont
     try {
       // Phase 1: Find bookings and ask for confirmation
       if (!session.rescheduleConfirmationPending) {
-        // Find all bookings by phone
-        const allBookings = await googleCalendarService.getAllBookings();
-        const normalizedSearchPhone = this.normalizePhoneNumber(session.phone);
-        const bookings = allBookings.filter(booking => {
-          const normalizedBookingPhone = this.normalizePhoneNumber(booking.patientPhone);
-          return normalizedBookingPhone === normalizedSearchPhone || 
-                 normalizedBookingPhone.endsWith(normalizedSearchPhone) ||
-                 normalizedSearchPhone.endsWith(normalizedBookingPhone);
-        });
+        // Find bookings by phone
+        const bookings = await googleCalendarService.findBookingByPhone(session.phone);
         
         if (!bookings || bookings.length === 0) {
           await googleSheetsService.logAction({
