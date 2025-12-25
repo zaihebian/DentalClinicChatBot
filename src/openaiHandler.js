@@ -3136,6 +3136,36 @@ Write a complete, natural response that provides the pricing information in cont
         });
         session.existingBookingToReschedule = selectedBooking;
         session.existingBookings = null;
+
+        // Return with confirmation prompt (like single booking)
+        const bookingStartTime = selectedBooking.startTime instanceof Date
+          ? selectedBooking.startTime
+          : new Date(selectedBooking.startTime);
+
+        let doctorName = selectedBooking.doctor;
+        if (doctorName && doctorName.includes('@group.calendar.google.com')) {
+          const calendarIdToDoctor = Object.fromEntries(
+            Object.entries(config.calendar.dentistCalendars).map(([doc, cal]) => [cal, doc])
+          );
+          doctorName = calendarIdToDoctor[doctorName] || doctorName;
+        }
+
+        const formattedDate = bookingStartTime.toLocaleDateString('en-US', {
+          month: 'numeric',
+          day: 'numeric',
+          year: 'numeric'
+        });
+        const formattedStartTime = bookingStartTime.toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true
+        });
+
+        return {
+          success: false, // Not rescheduled yet, waiting for confirmation
+          message: `I selected your appointment:\n\nDoctor: ${doctorName}\nDate: ${formattedDate}\nTime: ${formattedStartTime}\n\nWould you like to reschedule this appointment?`,
+          shouldProceedToBooking: false
+        };
       }
 
       // Now we have a selected booking (either from single booking or user selection)
