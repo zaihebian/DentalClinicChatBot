@@ -219,7 +219,7 @@ class OpenAIHandler {
       
       // Add user message and assistant response to history before ending session
       sessionManager.addMessage(conversationId, 'user', userMessage);
-      const confirmationMessage = '✅ Your session has been cleared. Starting fresh now!';
+      const confirmationMessage = '✅ Your session has been cleared. Starting fresh! How can I help you today?';
       sessionManager.addMessage(conversationId, 'assistant', confirmationMessage);
       
       // Log assistant response before ending session
@@ -1673,16 +1673,21 @@ JSON object:`;
    * // Output: Prompt includes treatment and intent, but no dentist/patient
    */
   buildSystemPrompt(session, actionResult = null) {
-    let prompt = `You are a polite and professional AI receptionist for a dental clinic. Your role is to help patients book appointments, answer questions about pricing and booking information, and manage cancellations and rescheduling. You can only handle these tasks; for anything else, just politely respond. Do not answer any medical questions.
+    let prompt = `You are a polite and professional AI receptionist for a dental clinic. Your role is to help patients book appointments, answer questions about treatments and pricing, and manage cancellations.
 
 Guidelines:
 - Always be polite, professional, and empathetic
 - When users greet you (e.g., "hi", "hello", "hey"), acknowledge the greeting warmly first, then ask how you can help
+- If no clear intent is detected from the user's message, politely ask clarifying questions to understand their needs
+- Example for greetings: "Hello! How can I help you today? Would you like to book an appointment?"
+- Ask clarifying questions when needed
+- Confirm details before taking actions
 - Keep responses concise and clear
 - Use the patient's name when you know it
+- NEVER claim an appointment is scheduled, booked, or confirmed unless you have actually created a calendar event
+- If a slot is pending confirmation, ask the user to confirm - do not claim it's already scheduled
 - Working hours are 9:00 AM - 6:00 PM, Monday-Friday only
 - NEVER suggest appointment times outside working hours (before 9 AM or after 6 PM, or weekends)
-- Only claim an appointment is "scheduled", "booked", or "confirmed" when ACTION RESULT explicitly states it was successfully booked
 
 Current conversation context:
 `;
@@ -1694,20 +1699,27 @@ Current conversation context:
         prompt += `  Details: Doctor ${actionResult.details.doctor}, ${actionResult.details.treatment}, ${actionResult.details.date} at ${actionResult.details.time}\n`;
         prompt += `  Your response should confirm the booking naturally and provide the details.\n`;
       } else if (actionResult.type === ACTION_TYPES.BOOKING && actionResult.requiresPatientName) {
-        prompt += `- ACTION RESULT: Booking flow requires patient name.\n`;
+        prompt += `- ACTION RESULT: Booking was attempted but patient name is required.\n`;
         prompt += `  Your response should politely ask for the patient's name.\n`;
-      } else if (actionResult.type === ACTION_TYPES.BOOKING && actionResult.ambiguous) {
-        prompt += `- ACTION RESULT: User's response was ambiguous regarding slot confirmation.\n`;
-        prompt += `  Your response should re-present the slot details and ask for clear confirmation.\n`;
       } else if (actionResult.type === ACTION_TYPES.BOOKING && actionResult.declined) {
         prompt += `- ACTION RESULT: User declined the appointment slot.\n`;
         prompt += `  Your response should acknowledge this and ask if they'd like to choose a different time.\n`;
+      } else if (actionResult.type === ACTION_TYPES.BOOKING && actionResult.slotUnavailable) {
+        prompt += `- ACTION RESULT: The selected time slot is no longer available.\n`;
+        prompt += `  Your response should apologize and let them know you'll find alternative times.\n`;
       } else if (actionResult.type === ACTION_TYPES.BOOKING && !actionResult.success) {
         prompt += `- ACTION RESULT: Booking attempt failed: ${actionResult.message}\n`;
         prompt += `  Your response should apologize and explain the issue naturally.\n`;
       } else if (actionResult.type === ACTION_TYPES.CANCELLATION && actionResult.success) {
         prompt += `- ACTION RESULT: Appointment cancellation was processed successfully.\n`;
         prompt += `  Your response should confirm the cancellation naturally and politely.\n`;
+      } else if (actionResult.type === ACTION_TYPES.CANCELLATION && actionResult.noBookingFound) {
+        prompt += `- ACTION RESULT: No appointment was found to cancel.\n`;
+        prompt += `  Your response should inform the user that no appointment was found and offer to help them.\n`;
+      } else if (actionResult.type === ACTION_TYPES.CANCELLATION && actionResult.requiresConfirmation) {
+        prompt += `- ACTION RESULT: Found an appointment for cancellation.\n`;
+        prompt += `  Details: Doctor ${actionResult.details.doctor}, ${actionResult.details.date} at ${actionResult.details.time}\n`;
+        prompt += `  Your response should present these details and ask the user to confirm cancellation.\n`;
       } else if (actionResult.type === ACTION_TYPES.CANCELLATION && !actionResult.success) {
         prompt += `- ACTION RESULT: Cancellation attempt failed: ${actionResult.message}\n`;
         prompt += `  Your response should apologize and explain the issue naturally.\n`;
@@ -1715,7 +1727,6 @@ Current conversation context:
       prompt += `\n`;
     }
 
-    // Only include session state if not already covered by actionResult
     if (session.patientName) {
       prompt += `- Patient name: ${session.patientName}\n`;
     }
@@ -1728,10 +1739,10 @@ Current conversation context:
     if (session.dentistName) {
       prompt += `- Dentist: ${session.dentistName}\n`;
     }
-    // Only show pending slot if no actionResult (actionResult would have handled it)
     if (session.selectedSlot && !actionResult) {
+      // Only show pending slot if no action was taken (action would have cleared it)
       prompt += `- Selected slot (pending confirmation): ${session.selectedSlot.startTime.toLocaleString()}\n`;
-      prompt += `- IMPORTANT: This slot is PENDING confirmation. Ask user to confirm; do NOT claim it's already scheduled.\n`;
+      prompt += `- IMPORTANT: This slot is PENDING confirmation. Ask user to confirm, do NOT claim it's already scheduled.\n`;
     }
     if (session.bookingConfirmationPending && !actionResult) {
       prompt += `- Status: Waiting for user confirmation of the selected slot\n`;
@@ -1746,9 +1757,18 @@ Treatment durations:
 - Braces Maintenance: 45 min (Dr BracesB), 15 min (Dr BracesA)
 - Filling: 30 min for first tooth + 15 min per additional tooth
 
-CRITICAL RULES:
-- Your role is to communicate naturally based on the context above
-`;
+Working hours: 9:00 AM - 6:00 PM, Monday-Friday (weekends excluded)
+Minimum appointment time: 9:00 AM
+Maximum appointment time: 6:00 PM
+
+IMPORTANT RULES:
+- Patient name is MANDATORY - always ask for it before booking or confirming appointments
+- If user doesn't specify a treatment type, assume they need a Consultation
+- Do NOT ask users to choose a dentist - the system will automatically select the dentist with earliest availability
+- Always check availability when user wants to book - don't suggest times without checking first
+- If user doesn't specify a time preference, default to ASAP (earliest available slot)
+- Never confirm or book an appointment without collecting the patient's name first
+- Always confirm appointment details before booking. Only say an appointment is "scheduled" or "confirmed" after the system has actually created a calendar event.`;
 
     return prompt;
   }
