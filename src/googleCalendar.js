@@ -164,6 +164,12 @@ class GoogleCalendarService {
   async getAvailableSlots(treatmentType, dentistNames) {
     const slots = [];
     const now = new Date();
+    
+    // Set start time to tomorrow (earliest available)
+    const tomorrow = new Date(now);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(0, 0, 0, 0); // Start of tomorrow
+    
     const oneMonthLater = new Date(now);
     oneMonthLater.setMonth(oneMonthLater.getMonth() + 1);
 
@@ -178,14 +184,14 @@ class GoogleCalendarService {
         
         const events = await this.calendar.events.list({
           calendarId,
-          timeMin: now.toISOString(),
+          timeMin: tomorrow.toISOString(),
           timeMax: oneMonthLater.toISOString(),
           singleEvents: true,
           orderBy: 'startTime',
         });
 
         const busySlots = this.parseBusySlots(events.data.items);
-        const availableSlots = this.findAvailableSlots(busySlots, now, oneMonthLater, doctor, now);
+        const availableSlots = this.findAvailableSlots(busySlots, tomorrow, oneMonthLater, doctor, tomorrow);
         
         // Log first free time slot for this doctor
         if (availableSlots.length > 0) {
@@ -287,6 +293,8 @@ class GoogleCalendarService {
 
     let currentDate = new Date(startDate);
     const now = new Date(currentTime);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
     
     while (currentDate < endDate) {
       // Skip weekends
@@ -297,8 +305,17 @@ class GoogleCalendarService {
         continue;
       }
 
-      // Check each day
+      // Skip today - only allow appointments from tomorrow onwards
       const dayStart = new Date(currentDate);
+      dayStart.setHours(0, 0, 0, 0);
+      const isToday = dayStart.getTime() === today.getTime();
+      if (isToday) {
+        currentDate.setDate(currentDate.getDate() + 1);
+        currentDate.setHours(workingHours.start, 0, 0, 0);
+        continue;
+      }
+
+      // Check each day
       dayStart.setHours(workingHours.start, 0, 0, 0);
       const dayEnd = new Date(currentDate);
       dayEnd.setHours(workingHours.end, 0, 0, 0);
@@ -309,9 +326,8 @@ class GoogleCalendarService {
       );
 
       // Find gaps between busy slots
-      // If this is today, start from current time instead of 9 AM
-      const isToday = dayStart.toDateString() === now.toDateString();
-      let slotStartTime = isToday ? new Date(Math.max(dayStart, now)) : new Date(dayStart);
+      // Start from beginning of day (not current time) since we've already skipped today
+      let slotStartTime = new Date(dayStart);
       
       for (const busySlot of dayBusySlots.sort((a, b) => a.start - b.start)) {
         if (slotStartTime < busySlot.start) {
@@ -348,11 +364,15 @@ class GoogleCalendarService {
       currentDate.setHours(workingHours.start, 0, 0, 0);
     }
 
-    // Final safety filter: Remove any slots that start before current time
-    // This ensures we never return past time slots, even if there's a logic error
+    // Final safety filter: Remove any slots that start before tomorrow
+    // This ensures we never return today's slots, even if there's a logic error
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(0, 0, 0, 0);
+    
     const filteredSlots = availableSlots.filter(slot => {
       const slotStart = new Date(slot.startTime);
-      return slotStart >= now;
+      return slotStart >= tomorrow;
     });
 
     return filteredSlots;
