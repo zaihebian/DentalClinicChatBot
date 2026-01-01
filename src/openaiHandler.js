@@ -219,7 +219,7 @@ class OpenAIHandler {
       
       // Add user message and assistant response to history before ending session
       sessionManager.addMessage(conversationId, 'user', userMessage);
-      const confirmationMessage = '✅ Your session has been cleared. Starting fresh! How can I help you today?';
+      const confirmationMessage = '✅ Your session has been cleared. Starting fresh now!';
       sessionManager.addMessage(conversationId, 'assistant', confirmationMessage);
       
       // Log assistant response before ending session
