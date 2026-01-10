@@ -134,27 +134,53 @@ app.get('/api/conversations', async (req, res) => {
  * @param {string} conversationId - Conversation ID (phone number)
  * @returns {Object} Conversation object or 404 if not found/expired
  */
-app.get('/api/conversations/:conversationId', (req, res) => {
+app.get('/api/conversations/:conversationId', async (req, res) => {
   try {
     const { conversationId } = req.params;
-    const session = sessionManager.getSessionData(conversationId);
+    console.log(`[DEBUG] /api/conversations/${conversationId} - Fetching conversation`);
     
-    if (!session) {
-      return res.status(404).json({ error: 'Conversation not found', code: 'NOT_FOUND' });
-    }
+    // Try in-memory session first
+    let session = sessionManager.getSessionData(conversationId);
     
-    if (sessionManager.isExpired(session)) {
-      return res.status(404).json({ error: 'Conversation expired', code: 'EXPIRED' });
+    if (!session || sessionManager.isExpired(session)) {
+      // Fallback to Google Sheets (source of truth for serverless)
+      console.log(`[DEBUG] Conversation not in memory, reading from Google Sheets...`);
+      const allConversations = await googleSheetsService.getActiveConversations(10);
+      const conversation = allConversations.find(c => c.conversationId === conversationId);
+      
+      if (!conversation) {
+        console.log(`[DEBUG] Conversation ${conversationId} not found in Google Sheets`);
+        return res.status(404).json({ error: 'Conversation not found', code: 'NOT_FOUND' });
+      }
+      
+      // Convert Google Sheets conversation format to session-like format
+      session = {
+        conversationId: conversation.conversationId,
+        phone: conversation.phone,
+        patientName: conversation.patientName,
+        owner: conversation.owner || 'ai',
+        handoverReason: conversation.handoverReason,
+        handoverTimestamp: conversation.handoverTimestamp,
+        conversationHistory: conversation.conversationHistory || [],
+        lastActivity: conversation.lastActivity,
+        treatmentType: null, // Not stored in Google Sheets format
+        dentistName: null, // Not stored in Google Sheets format
+        selectedSlot: null // Not stored in Google Sheets format
+      };
+      
+      console.log(`[DEBUG] Found conversation in Google Sheets with ${session.conversationHistory.length} messages`);
+    } else {
+      console.log(`[DEBUG] Found conversation in memory with ${session.conversationHistory?.length || 0} messages`);
     }
     
     res.json({
       conversationId: session.conversationId,
       phone: session.phone,
       patientName: session.patientName,
-      owner: session.owner,
+      owner: session.owner || 'ai',
       handoverReason: session.handoverReason,
       handoverTimestamp: session.handoverTimestamp,
-      conversationHistory: session.conversationHistory,
+      conversationHistory: session.conversationHistory || [],
       lastActivity: session.lastActivity,
       treatmentType: session.treatmentType,
       dentistName: session.dentistName,

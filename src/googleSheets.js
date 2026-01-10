@@ -588,10 +588,27 @@ class GoogleSheetsService {
         
         // Build conversation history
         if (role && message) {
+          // Determine message owner (for assistant messages)
+          let messageOwner = 'ai'; // Default
+          let messageContent = message; // Copy message content
+          
+          if (role === 'assistant') {
+            // Check if message starts with [Human] prefix
+            if (message.startsWith('[Human]')) {
+              messageOwner = 'human';
+              // Remove the prefix for display
+              messageContent = message.replace(/^\[Human\]\s*/, '');
+            } else {
+              // Check current conversation owner
+              messageOwner = conversation.owner || 'ai';
+            }
+          }
+          
           conversation.conversationHistory.push({
             role,
-            content: message,
-            timestamp
+            content: messageContent,
+            timestamp,
+            owner: messageOwner
           });
         }
         
@@ -601,6 +618,11 @@ class GoogleSheetsService {
           conversation.handoverReason = action === 'handover_automatic' ? 'automatic' : 'manual';
           conversation.handoverTimestamp = timestamp;
         }
+      });
+      
+      // Sort conversation history chronologically (oldest first) for each conversation
+      conversationsMap.forEach(conversation => {
+        conversation.conversationHistory.sort((a, b) => a.timestamp - b.timestamp);
       });
       
       // Convert map to array and sort by last activity (most recent first)
