@@ -85,21 +85,22 @@ app.get('/health', (req, res) => {
 app.get('/api/conversations', (req, res) => {
   try {
     const allSessions = sessionManager.getAllSessions();
-    const humanSessions = allSessions
-      .filter(session => session.owner === 'human' && !sessionManager.isExpired(session))
+    // Return ALL active conversations (both AI and human owned)
+    const activeSessions = allSessions
+      .filter(session => !sessionManager.isExpired(session))
       .map(session => ({
         conversationId: session.conversationId,
         phone: session.phone,
         patientName: session.patientName,
         lastActivity: session.lastActivity,
         conversationHistory: session.conversationHistory,
-        owner: session.owner,
+        owner: session.owner || 'ai', // Default to 'ai' if not set
         handoverReason: session.handoverReason,
         handoverTimestamp: session.handoverTimestamp
       }))
       .sort((a, b) => b.lastActivity - a.lastActivity); // Most recent first
     
-    res.json(humanSessions);
+    res.json(activeSessions);
   } catch (error) {
     console.error('Error fetching conversations:', error);
     res.status(500).json({ error: 'Failed to fetch conversations', code: 'SERVER_ERROR' });
