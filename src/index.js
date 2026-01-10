@@ -82,34 +82,44 @@ app.get('/health', (req, res) => {
  * @route GET /api/conversations
  * @returns {Array} Array of conversation objects with owner === 'human'
  */
-app.get('/api/conversations', (req, res) => {
+app.get('/api/conversations', async (req, res) => {
   try {
+    // Try to get conversations from in-memory sessions first (faster)
     const allSessions = sessionManager.getAllSessions();
     console.log(`[DEBUG] /api/conversations - Total sessions in memory: ${allSessions.length}`);
-    console.log(`[DEBUG] Session IDs:`, allSessions.map(s => s.conversationId));
     
-    // Return ALL active conversations (both AI and human owned)
-    const activeSessions = allSessions
-      .filter(session => {
-        const expired = sessionManager.isExpired(session);
-        if (expired) {
-          console.log(`[DEBUG] Session ${session.conversationId} is expired`);
-        }
-        return !expired;
-      })
-      .map(session => ({
-        conversationId: session.conversationId,
-        phone: session.phone,
-        patientName: session.patientName,
-        lastActivity: session.lastActivity,
-        conversationHistory: session.conversationHistory,
-        owner: session.owner || 'ai', // Default to 'ai' if not set
-        handoverReason: session.handoverReason,
-        handoverTimestamp: session.handoverTimestamp
-      }))
-      .sort((a, b) => b.lastActivity - a.lastActivity); // Most recent first
+    let activeSessions = [];
     
-    console.log(`[DEBUG] Returning ${activeSessions.length} active sessions`);
+    if (allSessions.length > 0) {
+      // Use in-memory sessions if available
+      activeSessions = allSessions
+        .filter(session => {
+          const expired = sessionManager.isExpired(session);
+          if (expired) {
+            console.log(`[DEBUG] Session ${session.conversationId} is expired`);
+          }
+          return !expired;
+        })
+        .map(session => ({
+          conversationId: session.conversationId,
+          phone: session.phone,
+          patientName: session.patientName,
+          lastActivity: session.lastActivity,
+          conversationHistory: session.conversationHistory,
+          owner: session.owner || 'ai',
+          handoverReason: session.handoverReason,
+          handoverTimestamp: session.handoverTimestamp
+        }))
+        .sort((a, b) => b.lastActivity - a.lastActivity);
+      
+      console.log(`[DEBUG] Returning ${activeSessions.length} active sessions from memory`);
+    } else {
+      // Fallback to Google Sheets (source of truth for serverless environments)
+      console.log(`[DEBUG] No sessions in memory, reading from Google Sheets...`);
+      activeSessions = await googleSheetsService.getActiveConversations(10);
+      console.log(`[DEBUG] Returning ${activeSessions.length} active sessions from Google Sheets`);
+    }
+    
     res.json(activeSessions);
   } catch (error) {
     console.error('Error fetching conversations:', error);

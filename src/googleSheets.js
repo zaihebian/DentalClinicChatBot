@@ -497,6 +497,125 @@ class GoogleSheetsService {
       action: reason === 'automatic' ? 'handover_automatic' : 'handover_manual',
     });
   }
+
+  /**
+   * Gets active conversations from Google Sheets.
+   * Reads all conversation rows, groups by Conversation ID, and returns active conversations.
+   * Used as source of truth for serverless environments where in-memory sessions don't persist.
+   * 
+   * @param {number} [timeoutMinutes=10] - Minutes before conversation is considered inactive
+   * @returns {Promise<Array>} Array of conversation objects with conversationId, phone, patientName, lastActivity, etc.
+   * 
+   * @example
+   * const conversations = await getActiveConversations(10);
+   * // Returns: [{ conversationId: "+1234567890", phone: "+1234567890", patientName: "John", lastActivity: 1234567890, ... }, ...]
+   */
+  async getActiveConversations(timeoutMinutes = 10) {
+    try {
+      console.log('[DEBUG] Reading conversations from Google Sheets...');
+      
+      // Read all rows from the sheet
+      const response = await this.sheets.spreadsheets.values.get({
+        spreadsheetId: config.sheets.sheetId,
+        range: `${config.sheets.sheetName}!A2:N`, // Skip header row, read all data
+      });
+
+      if (!response.data.values || response.data.values.length === 0) {
+        console.log('[DEBUG] No data in Google Sheets');
+        return [];
+      }
+
+      const rows = response.data.values;
+      const now = Date.now();
+      const timeoutMs = timeoutMinutes * 60 * 1000;
+      
+      // Group rows by Conversation ID and find most recent activity
+      const conversationsMap = new Map();
+      
+      // Column indices: Timestamp(0), Conversation ID(1), Phone(2), Patient Name(3), Role(4), Message(5), ...
+      rows.forEach(row => {
+        if (!row || row.length < 2) return; // Skip invalid rows
+        
+        const conversationId = row[1]?.trim(); // Conversation ID
+        const timestampStr = row[0]; // Timestamp
+        const phone = row[2]?.trim() || conversationId;
+        const patientName = row[3]?.trim() || '';
+        const role = row[4]?.trim() || '';
+        const message = row[5]?.trim() || '';
+        const status = row[12]?.trim() || 'active';
+        const action = row[13]?.trim() || 'conversation';
+        
+        if (!conversationId) return; // Skip rows without conversation ID
+        
+        // Parse timestamp (ISO format or other formats)
+        let timestamp;
+        try {
+          timestamp = new Date(timestampStr).getTime();
+          if (isNaN(timestamp)) return; // Skip invalid timestamps
+        } catch (e) {
+          return; // Skip rows with invalid timestamps
+        }
+        
+        // Check if conversation is still active (within timeout)
+        const age = now - timestamp;
+        if (age > timeoutMs) return; // Skip expired conversations
+        
+        // Get or create conversation entry
+        if (!conversationsMap.has(conversationId)) {
+          conversationsMap.set(conversationId, {
+            conversationId,
+            phone,
+            patientName,
+            lastActivity: timestamp,
+            conversationHistory: [],
+            owner: 'ai', // Default, will be updated if we find handover info
+            handoverReason: null,
+            handoverTimestamp: null
+          });
+        }
+        
+        const conversation = conversationsMap.get(conversationId);
+        
+        // Update last activity if this message is more recent
+        if (timestamp > conversation.lastActivity) {
+          conversation.lastActivity = timestamp;
+        }
+        
+        // Update patient name if available and not set
+        if (patientName && !conversation.patientName) {
+          conversation.patientName = patientName;
+        }
+        
+        // Build conversation history
+        if (role && message) {
+          conversation.conversationHistory.push({
+            role,
+            content: message,
+            timestamp
+          });
+        }
+        
+        // Check for handover events
+        if (action === 'handover_automatic' || action === 'handover_manual') {
+          conversation.owner = message.includes('human') ? 'human' : 'ai';
+          conversation.handoverReason = action === 'handover_automatic' ? 'automatic' : 'manual';
+          conversation.handoverTimestamp = timestamp;
+        }
+      });
+      
+      // Convert map to array and sort by last activity (most recent first)
+      const conversations = Array.from(conversationsMap.values())
+        .sort((a, b) => b.lastActivity - a.lastActivity);
+      
+      console.log(`[DEBUG] Found ${conversations.length} active conversations in Google Sheets`);
+      return conversations;
+      
+    } catch (error) {
+      console.error('[ERROR] Failed to read conversations from Google Sheets:', error);
+      // Return empty array on error (graceful degradation)
+      return [];
+    }
+  }
 }
 
 export const googleSheetsService = new GoogleSheetsService();
