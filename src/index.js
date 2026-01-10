@@ -85,9 +85,18 @@ app.get('/health', (req, res) => {
 app.get('/api/conversations', (req, res) => {
   try {
     const allSessions = sessionManager.getAllSessions();
+    console.log(`[DEBUG] /api/conversations - Total sessions in memory: ${allSessions.length}`);
+    console.log(`[DEBUG] Session IDs:`, allSessions.map(s => s.conversationId));
+    
     // Return ALL active conversations (both AI and human owned)
     const activeSessions = allSessions
-      .filter(session => !sessionManager.isExpired(session))
+      .filter(session => {
+        const expired = sessionManager.isExpired(session);
+        if (expired) {
+          console.log(`[DEBUG] Session ${session.conversationId} is expired`);
+        }
+        return !expired;
+      })
       .map(session => ({
         conversationId: session.conversationId,
         phone: session.phone,
@@ -100,6 +109,7 @@ app.get('/api/conversations', (req, res) => {
       }))
       .sort((a, b) => b.lastActivity - a.lastActivity); // Most recent first
     
+    console.log(`[DEBUG] Returning ${activeSessions.length} active sessions`);
     res.json(activeSessions);
   } catch (error) {
     console.error('Error fetching conversations:', error);
@@ -421,6 +431,8 @@ app.post('/webhook', async (req, res) => {
         
         // Log incoming message
         const session = sessionManager.getSession(conversationId);
+        console.log(`[DEBUG] Webhook - Session created/retrieved for ${conversationId}`);
+        console.log(`[DEBUG] Total sessions in memory: ${sessionManager.getAllSessions().length}`);
         await googleSheetsService.logConversationTurn(
           conversationId,
           phoneNumber,
