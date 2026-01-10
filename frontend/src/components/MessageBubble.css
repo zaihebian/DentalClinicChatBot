@@ -1,0 +1,47 @@
+.message-bubble {
+  margin-bottom: 12px;
+  max-width: 70%;
+  word-wrap: break-word;
+}
+
+.message-user {
+  margin-left: auto;
+  text-align: right;
+}
+
+.message-assistant {
+  margin-right: auto;
+  text-align: left;
+}
+
+.message-content {
+  padding: 10px 14px;
+  border-radius: 12px;
+  display: inline-block;
+  max-width: 100%;
+}
+
+.message-user .message-content {
+  background-color: #dcf8c6;
+  color: #000;
+}
+
+.message-assistant .message-content {
+  background-color: #ffffff;
+  color: #000;
+  border: 1px solid #e0e0e0;
+}
+
+.message-badge {
+  font-size: 10px;
+  color: #666;
+  margin-top: 4px;
+  font-weight: 500;
+}
+
+.message-time {
+  font-size: 11px;
+  color: #999;
+  margin-top: 4px;
+}
+

@@ -246,6 +246,50 @@ class OpenAIHandler {
     // Add user message to history
     sessionManager.addMessage(session.conversationId, 'user', userMessage);
 
+    // Check for automatic handover keywords before AI processing
+    const handoverKeywords = ['human', 'receptionist', 'agent', 'speak to someone', 'talk to person'];
+    const messageLower = userMessage.toLowerCase();
+    const hasHandoverKeyword = handoverKeywords.some(keyword => messageLower.includes(keyword));
+    
+    if (hasHandoverKeyword && session.owner === 'ai') {
+      console.log('🔄 [HANDOVER] Automatic handover detected via keywords');
+      
+      // Update session owner
+      sessionManager.updateSession(session.conversationId, {
+        owner: 'human',
+        handoverReason: 'automatic',
+        handoverTimestamp: Date.now()
+      });
+      session.owner = 'human';
+      session.handoverReason = 'automatic';
+      session.handoverTimestamp = Date.now();
+      
+      // Send handover message
+      const handoverMessage = 'Connecting you to our receptionist...';
+      sessionManager.addMessage(session.conversationId, 'assistant', handoverMessage, 'ai');
+      
+      // Log handover to Google Sheets
+      await googleSheetsService.logHandover(
+        session.conversationId,
+        phoneNumber,
+        'human',
+        'automatic',
+        session
+      );
+      
+      // Log assistant response
+      await googleSheetsService.logConversationTurn(
+        session.conversationId,
+        phoneNumber,
+        'assistant',
+        handoverMessage,
+        session,
+        'ai'
+      );
+      
+      return handoverMessage;
+    }
+
     // STEP 1: Combined intent detection and information extraction (single AI call)
     console.log('🔍 [PRE-AI] Combined intent detection and information extraction...');
     const combinedResult = await this.detectIntentsAndExtractInformation(userMessage, session);

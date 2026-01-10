@@ -170,11 +170,14 @@ class SessionManager {
       availableSlots: [], // Array of available slots for 1 month (cached)
       availableSlotsTimestamp: null, // Timestamp when slots were fetched (for cache freshness)
       existingBookings: [], // Array of existing bookings for 2 months
-      conversationHistory: [], // Array of { role: 'user'|'assistant', content: string, timestamp: Date }
+      conversationHistory: [], // Array of { role: 'user'|'assistant', content: string, timestamp: Date, owner?: 'ai'|'human' }
       dateTimePreference: null, // User's date/time preference (stored for availability checks)
       cancelledSlotToExclude: null, // { startTime, endTime, doctor } - exclude this slot during reschedule
       askedDoctorPreference: false, // Track if doctor preference question was asked
       askedDateTimePreference: false, // Track if date/time preference question was asked
+      owner: 'ai', // 'ai' | 'human' - who currently owns the conversation
+      handoverReason: null, // 'automatic' | 'manual' | null - reason for handover
+      handoverTimestamp: null, // Timestamp when handover occurred
       createdAt: Date.now(),
       lastActivity: Date.now(),
     };
@@ -246,22 +249,25 @@ class SessionManager {
    * 
    * Appends a new message entry to the session's conversationHistory array.
    * This history is used by the AI to maintain conversation context. Each
-   * message includes role, content, and timestamp. Automatically updates
-   * lastActivity timestamp.
+   * message includes role, content, timestamp, and optionally owner (for assistant messages).
+   * Automatically updates lastActivity timestamp.
    * 
    * Message format:
-   * - role: 'user' (from patient) or 'assistant' (from AI)
+   * - role: 'user' (from patient) or 'assistant' (from AI or human)
    * - content: Full message text
    * - timestamp: Date object of when message was added
+   * - owner: 'ai' | 'human' (optional, only for 'assistant' role messages)
    * 
    * Edge cases:
    * - If session doesn't exist, creates a new one first
    * - Messages are appended in chronological order
    * - History grows unbounded (consider limiting in future)
+   * - Owner defaults to 'ai' if not provided (backward compatible)
    * 
    * @param {string} conversationId - Unique identifier for the conversation
    * @param {string} role - Message role: 'user' or 'assistant'
    * @param {string} content - Message content/text
+   * @param {string} [owner] - Message owner: 'ai' | 'human' (optional, defaults to 'ai')
    * @returns {void} Modifies session in place, no return value
    * 
    * @example
@@ -277,9 +283,15 @@ class SessionManager {
    * // ]
    * 
    * @example
-   * // Add assistant response:
+   * // Add assistant response (AI):
    * addMessage("+1234567890", "assistant", "Which dentist would you like?")
    * // conversationHistory now has 2 messages (user + assistant)
+   * // owner defaults to 'ai'
+   * 
+   * @example
+   * // Add assistant response (Human):
+   * addMessage("+1234567890", "assistant", "Hello, how can I help?", "human")
+   * // Message includes owner: 'human'
    * 
    * @example
    * // Conversation flow:
@@ -288,13 +300,18 @@ class SessionManager {
    * addMessage("+1234567890", "user", "I need cleaning")
    * // History contains 3 messages in chronological order
    */
-  addMessage(conversationId, role, content) {
+  addMessage(conversationId, role, content, owner = 'ai') {
     const session = this.getSession(conversationId);
-    session.conversationHistory.push({
+    const message = {
       role,
       content,
       timestamp: new Date(),
-    });
+    };
+    // Only add owner field for assistant messages
+    if (role === 'assistant') {
+      message.owner = owner;
+    }
+    session.conversationHistory.push(message);
     session.lastActivity = Date.now();
   }
 
@@ -472,6 +489,16 @@ class SessionManager {
    */
   getSessionData(conversationId) {
     return this.sessions.get(conversationId);
+  }
+
+  /**
+   * Gets all sessions (for API endpoints).
+   * Returns array of all session objects.
+   * 
+   * @returns {Array} Array of all session objects
+   */
+  getAllSessions() {
+    return Array.from(this.sessions.values());
   }
 
   /**

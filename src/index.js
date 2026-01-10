@@ -24,15 +24,23 @@
  */
 
 import express from 'express';
+import cors from 'cors';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { config, validateConfig } from './config.js';
 import { whatsappService } from './whatsapp.js';
 import { openaiHandler } from './openaiHandler.js';
 import { sessionManager } from './sessionManager.js';
 import { googleSheetsService } from './googleSheets.js';
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 const app = express();
 
 // Middleware
+// CORS - allow all origins (internal tool)
+app.use(cors());
 // Parse JSON request bodies (for webhook payloads)
 app.use(express.json());
 // Parse URL-encoded request bodies (for form data)
@@ -68,6 +76,196 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+/**
+ * Get all human-owned conversations
+ * 
+ * @route GET /api/conversations
+ * @returns {Array} Array of conversation objects with owner === 'human'
+ */
+app.get('/api/conversations', (req, res) => {
+  try {
+    const allSessions = sessionManager.getAllSessions();
+    const humanSessions = allSessions
+      .filter(session => session.owner === 'human' && !sessionManager.isExpired(session))
+      .map(session => ({
+        conversationId: session.conversationId,
+        phone: session.phone,
+        patientName: session.patientName,
+        lastActivity: session.lastActivity,
+        conversationHistory: session.conversationHistory,
+        owner: session.owner,
+        handoverReason: session.handoverReason,
+        handoverTimestamp: session.handoverTimestamp
+      }))
+      .sort((a, b) => b.lastActivity - a.lastActivity); // Most recent first
+    
+    res.json(humanSessions);
+  } catch (error) {
+    console.error('Error fetching conversations:', error);
+    res.status(500).json({ error: 'Failed to fetch conversations', code: 'SERVER_ERROR' });
+  }
+});
+
+/**
+ * Get single conversation by ID
+ * 
+ * @route GET /api/conversations/:conversationId
+ * @param {string} conversationId - Conversation ID (phone number)
+ * @returns {Object} Conversation object or 404 if not found/expired
+ */
+app.get('/api/conversations/:conversationId', (req, res) => {
+  try {
+    const { conversationId } = req.params;
+    const session = sessionManager.getSessionData(conversationId);
+    
+    if (!session) {
+      return res.status(404).json({ error: 'Conversation not found', code: 'NOT_FOUND' });
+    }
+    
+    if (sessionManager.isExpired(session)) {
+      return res.status(404).json({ error: 'Conversation expired', code: 'EXPIRED' });
+    }
+    
+    res.json({
+      conversationId: session.conversationId,
+      phone: session.phone,
+      patientName: session.patientName,
+      owner: session.owner,
+      handoverReason: session.handoverReason,
+      handoverTimestamp: session.handoverTimestamp,
+      conversationHistory: session.conversationHistory,
+      lastActivity: session.lastActivity,
+      treatmentType: session.treatmentType,
+      dentistName: session.dentistName,
+      selectedSlot: session.selectedSlot
+    });
+  } catch (error) {
+    console.error('Error fetching conversation:', error);
+    res.status(500).json({ error: 'Failed to fetch conversation', code: 'SERVER_ERROR' });
+  }
+});
+
+/**
+ * Send human reply via WhatsApp
+ * 
+ * @route POST /api/human/reply
+ * @param {string} conversationId - Conversation ID
+ * @param {string} message - Message text to send
+ * @returns {Object} Success response with messageId or error
+ */
+app.post('/api/human/reply', async (req, res) => {
+  try {
+    const { conversationId, message } = req.body;
+    
+    if (!conversationId || !message) {
+      return res.status(400).json({ error: 'Missing conversationId or message', code: 'BAD_REQUEST' });
+    }
+    
+    const session = sessionManager.getSessionData(conversationId);
+    
+    if (!session) {
+      return res.status(404).json({ error: 'Conversation not found', code: 'NOT_FOUND' });
+    }
+    
+    if (sessionManager.isExpired(session)) {
+      return res.status(404).json({ error: 'Conversation expired', code: 'EXPIRED' });
+    }
+    
+    if (session.owner !== 'human') {
+      return res.status(403).json({ error: 'Conversation not owned by human', code: 'FORBIDDEN' });
+    }
+    
+    // Send message via WhatsApp
+    const result = await whatsappService.sendMessage(session.phone || conversationId, message);
+    
+    if (!result.success) {
+      return res.status(500).json({ 
+        error: 'Failed to send message', 
+        code: 'WHATSAPP_ERROR',
+        details: result.error 
+      });
+    }
+    
+    // Add message to session history with owner: 'human'
+    sessionManager.addMessage(conversationId, 'assistant', message, 'human');
+    
+    // Log to Google Sheets
+    await googleSheetsService.logConversationTurn(
+      conversationId,
+      session.phone || conversationId,
+      'assistant',
+      message,
+      session,
+      'human'
+    );
+    
+    res.json({ success: true, messageId: result.messageId });
+  } catch (error) {
+    console.error('Error sending human reply:', error);
+    res.status(500).json({ error: 'Failed to send reply', code: 'SERVER_ERROR' });
+  }
+});
+
+/**
+ * Handover conversation between AI and human
+ * 
+ * @route POST /api/handover
+ * @param {string} conversationId - Conversation ID
+ * @param {string} owner - New owner: 'ai' or 'human'
+ * @param {string} [reason] - Optional reason for handover
+ * @returns {Object} Updated session object
+ */
+app.post('/api/handover', async (req, res) => {
+  try {
+    const { conversationId, owner, reason } = req.body;
+    
+    if (!conversationId || !owner) {
+      return res.status(400).json({ error: 'Missing conversationId or owner', code: 'BAD_REQUEST' });
+    }
+    
+    if (owner !== 'ai' && owner !== 'human') {
+      return res.status(400).json({ error: 'Invalid owner value. Must be "ai" or "human"', code: 'BAD_REQUEST' });
+    }
+    
+    const session = sessionManager.getSessionData(conversationId);
+    
+    if (!session) {
+      return res.status(404).json({ error: 'Conversation not found', code: 'NOT_FOUND' });
+    }
+    
+    // Update session owner
+    const handoverReason = reason || 'manual';
+    sessionManager.updateSession(conversationId, {
+      owner,
+      handoverReason,
+      handoverTimestamp: Date.now()
+    });
+    
+    // Log handover to Google Sheets
+    await googleSheetsService.logHandover(
+      conversationId,
+      session.phone || conversationId,
+      owner,
+      handoverReason,
+      session
+    );
+    
+    // Get updated session
+    const updatedSession = sessionManager.getSessionData(conversationId);
+    
+    res.json({
+      conversationId: updatedSession.conversationId,
+      phone: updatedSession.phone,
+      patientName: updatedSession.patientName,
+      owner: updatedSession.owner,
+      handoverReason: updatedSession.handoverReason,
+      handoverTimestamp: updatedSession.handoverTimestamp
+    });
+  } catch (error) {
+    console.error('Error handling handover:', error);
+    res.status(500).json({ error: 'Failed to process handover', code: 'SERVER_ERROR' });
+  }
+});
 
 /**
  * WhatsApp webhook verification endpoint.
@@ -230,6 +428,14 @@ app.post('/webhook', async (req, res) => {
           session
         );
 
+        // Check session owner - if human, skip AI processing
+        if (session.owner === 'human') {
+          console.log('👤 [HANDOVER] Session owned by human, skipping AI processing');
+          // Just log the message, human will handle via inbox
+          res.status(200).send('OK');
+          return;
+        }
+
         // Generate AI response
         const response = await openaiHandler.generateResponse(
           conversationId,
@@ -323,6 +529,21 @@ async function initialize() {
     console.error('Error during initialization:', error);
     process.exit(1);
   }
+}
+
+// Serve React build files in LOCAL DEVELOPMENT ONLY
+// On Vercel, routing is handled by vercel.json, not Express
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+  app.use(express.static(path.join(__dirname, '../frontend/dist')));
+  
+  // Catch-all handler: send React app for non-API routes
+  app.get('*', (req, res) => {
+    // Skip API routes and webhook routes
+    if (req.path.startsWith('/api') || req.path.startsWith('/webhook') || req.path === '/health') {
+      return res.status(404).json({ error: 'Not found' });
+    }
+    res.sendFile(path.join(__dirname, '../frontend/dist/index.html'));
+  });
 }
 
 // Export app for Vercel serverless functions

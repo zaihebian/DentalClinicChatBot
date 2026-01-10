@@ -444,13 +444,19 @@ class GoogleSheetsService {
    * )
    * // Logs: intent="price_inquiry, booking" (comma-separated)
    */
-  async logConversationTurn(conversationId, phone, role, message, sessionData = {}) {
+  async logConversationTurn(conversationId, phone, role, message, sessionData = {}, owner = null) {
+    // Add owner indicator to message for human messages
+    let messageToLog = message;
+    if (owner === 'human' && role === 'assistant') {
+      messageToLog = `[Human] ${message}`;
+    }
+    
     await this.logMessage({
       conversationId,
       phone,
       patientName: sessionData.patientName,
       role,
-      message,
+      message: messageToLog,
       intent: sessionData.intents && sessionData.intents.length > 0 
         ? sessionData.intents.join(', ') 
         : '',
@@ -460,8 +466,35 @@ class GoogleSheetsService {
         ? `${sessionData.selectedSlot.startTime.toISOString()} - ${sessionData.selectedSlot.endTime.toISOString()}`
         : '',
       eventId: sessionData.eventId,
-      status: sessionData.status || 'active',
+      status: owner === 'human' ? 'human_reply' : (sessionData.status || 'active'),
       action: 'conversation',
+    });
+  }
+
+  /**
+   * Logs a handover event to Google Sheets.
+   * 
+   * @param {string} conversationId - Conversation ID (phone number)
+   * @param {string} phone - Phone number
+   * @param {string} owner - New owner: 'ai' or 'human'
+   * @param {string} reason - Handover reason: 'automatic' or 'manual'
+   * @param {Object} sessionData - Session data object
+   * @returns {Promise<void>}
+   */
+  async logHandover(conversationId, phone, owner, reason, sessionData = {}) {
+    await this.logMessage({
+      conversationId,
+      phone,
+      patientName: sessionData.patientName,
+      role: 'system',
+      message: `Handover to ${owner}: ${reason}`,
+      intent: '',
+      dentist: sessionData.dentistName,
+      treatment: sessionData.treatmentType,
+      dateTime: '',
+      eventId: '',
+      status: 'active',
+      action: reason === 'automatic' ? 'handover_automatic' : 'handover_manual',
     });
   }
 }
